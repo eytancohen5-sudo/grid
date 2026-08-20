@@ -78,7 +78,8 @@ half of the player who is about to take the turn**:
 - Player B to take the turn (attacking the bottom goal): mirrored —
   `(4.0, 3.0)`, `(6.0, 3.0)`, `(5.0, 1.5)`.
 
-The wall is **removed from the field** at kick-off. Wall budgets do not reset.
+Walls are **not** removed at kick-off — each player's wall (§7) is permanent for the
+whole match once placed. Only a full "Play again" clears them.
 
 ---
 
@@ -220,24 +221,41 @@ where it rests. Simplest rule that cannot be exploited.
 
 ## 7. The wall
 
-- **One wall exists on the field**, shared. Each player has an independent budget of
-  **5 placements per match** **TUNABLE: `WALL_USES = 5`**.
+Redesigned 2026-08-20 from Eytan's live playtest feedback on the original shared-wall
+version (kept below in spirit, not literally — the mechanic actually shipped is this one):
+
+- **Each player has their own wall.** Two can exist on the field at once, one per player,
+  each placed **exactly once per match**, **TUNABLE: `WALLS_PER_PLAYER = 1`** (a future
+  session may raise this to 2 — the implementation does not hardcode "at most one total").
+  Once placed, a wall is **permanent** for the rest of the match — it cannot be moved or
+  replaced. There is no "skip" budget concept: a player who never places simply never has
+  one, no penalty either way, no deadline.
 - Length **2 cells**, aligned to grid lines, **horizontal or vertical only**.
-- **When:** at the **end of your turn**, before control passes over, you may spend one use
-  to place or move the wall. This is the defence you set for your opponent's incoming turn.
-  Skipping is always allowed and costs nothing.
+- **When:** a player may place their wall any time it's genuinely their own turn to act —
+  including mid-turn while already armed (a completed pass), so a wall can set up an
+  offensive bounce shot, not only defend against the opponent's next turn. Not a separate
+  phase between turns; there is no window that opens or closes on its own.
 - **Legality at the moment of placement** — all must hold:
   - The wall lies entirely inside the field.
   - Distance from the wall segment to **each goal mouth segment** ≥ **2.0 cells**.
   - Distance from the wall segment to **each circle's centre** ≥ **2.0 cells**.
+  - Distance from the wall segment to **the other player's wall** (if placed yet) ≥
+    **2.0 cells** — reuses the same clearance value rather than a second tunable; this
+    must stay above `2 * piece.radius` (0.8 cells) or two walls placed too close together
+    can pass a circle back and forth between them in the physics resolution.
 - After placement the wall stays put and stays legal even if circles come to rest beside it.
-  The 2-cell rule is checked **only at placement**.
+  The clearance rules are checked **only at placement**. Walls survive kick-offs (§3) —
+  only starting a brand new match clears them.
 
 ### Placement UI
-Drag the wall anywhere on the field; it snaps to grid lines. Tap a rotate control to switch
-between horizontal and vertical. **Legal positions are shown as a dimmed overlay of allowed
-grid lines** and the wall renders red and cannot be confirmed while illegal. Confirm button
-commits and spends the use.
+A **"Create Wall" button on each player's side of the HUD**, enabled only when it's legal
+for that player to start placing right now (their own turn, nothing already in flight, they
+haven't placed yet). Tapping it opens the same drag-to-position UI as before: drag the wall
+anywhere on the field, it snaps to grid lines; a rotate control switches horizontal/vertical;
+**legal positions are shown as a dimmed overlay of allowed grid lines**, coloured to match
+that player's own wall colour, and the live preview renders red and cannot be confirmed
+while illegal. Confirm commits it — permanently. Cancel closes the dialog without spending
+anything; the button becomes available again to reopen it later on that same turn.
 
 ---
 
@@ -297,12 +315,14 @@ All colour lives in `config.js`. Nothing hard-coded in `render.js`.
 | `playerB` | `#F59E0B` | Amber — top player, their goal, their turn indicator |
 | `piece` | `#E2F6FF` | The three circles — neutral, nobody owns them |
 | `pieceActive` | `#FFFFFF` | The selected circle while aiming |
-| `wall` | `#F8FAFC` | The wall, solid and bright |
 | `wallIllegal` | `#EF4444` | Wall while in an illegal position |
 | `passLine` | `#22D3EE` at 35% | The live line between the two non-selected circles |
 
 Cyan/amber is deliberate: it separates cleanly under all common colour-vision deficiencies,
 where the obvious red/green would not.
+
+No dedicated `wall` token — each player's own wall (§7) renders in that player's own
+`playerA`/`playerB` colour, same as their goal and turn indicator.
 
 ### Effects (all with `ctx.shadowBlur`, no image assets)
 - Circles: filled, `shadowBlur` 12–18px in their own colour.
@@ -317,7 +337,7 @@ where the obvious red/green would not.
 
 ### HUD
 One thin bar, top of screen, outside the field:
-`[B score] · [wall uses B] · [match clock] · [wall uses A] · [A score]`
+`[B score] · [Create Wall (B)] · [match clock] · [Create Wall (A)] · [A score]`
 plus, on the field itself: the **ARMED** indicator beside the acting player's edge, and the
 draining **turn-timer bar** along that same edge in their colour.
 
@@ -338,7 +358,7 @@ export const CONFIG = {
   physics: { maxSpeed: 26, drag: 1.45, restRail: 0.60, restWall: 0.75,
              restThreshold: 0.15, dt: 1/120, settleTimeout: 6.0 },
   rules:   { goalsToWin: 3, strictContact: true },
-  wall:    { length: 2, clearance: 2.0, usesPerPlayer: 5, thickness: 0.18 },
+  wall:    { length: 2, clearance: 2.0, thickness: 0.18 },   // one permanent wall per player — no uses budget (§7)
   timers:  { turnSeconds: 20, matchSeconds: 300, matchClockEnabled: true },
 }
 ```
@@ -358,7 +378,7 @@ Each step must be playable or visible before moving on.
 3. **Rules.** Pass detection, armed state, turn machine, contact turnover, HUD.
 4. **Goals.** Scoring, kick-off reset, first-to-3, win overlay.
 5. **Timers.** Turn timer, then match clock (§8).
-6. **Wall.** Placement UI, legality, collision, budgets.
+6. **Wall.** Placement UI, legality, collision, one permanent wall per player.
 7. **VOID mode.** The second field: no rails, falls, the penalty, the ledge visual, and a
    mode toggle before the match. One branch in the collision code — not a second game.
 8. **Polish.** Trails, pass flash, goal flash, illegal pulse, the derez fall.
@@ -382,10 +402,11 @@ Manual, run on a phone. All must pass.
 6. Launching a circle into the goal while armed scores, and kick-off gives the turn to the
    conceding player.
 7. Grazing another circle ends the turn even if the pass line was crossed.
-8. The wall cannot be confirmed within 2 cells of any circle or either goal, and the illegal
-   state is visible before confirming.
-9. A circle at rest never ends up overlapping the wall or a rail.
-10. Wall budget decrements per player, stops at zero, and does not reset after a goal.
+8. A wall cannot be confirmed within 2 cells of any circle, either goal, or the other
+   player's wall, and the illegal state is visible before confirming.
+9. A circle at rest never ends up overlapping a wall or a rail.
+10. Each player can place their wall exactly once; once placed, "Create Wall" is no longer
+    available to them, the wall persists after a goal, and only "Play again" clears it.
 11. Three consecutive goals ends the match with the overlay.
 12. The turn timer restarts on every completed pass, pauses while circles are moving, and
     forfeits the turn at zero.

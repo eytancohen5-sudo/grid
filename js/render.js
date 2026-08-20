@@ -320,12 +320,13 @@ export function drawTrail(ctx, transform, trail) {
 
 /**
  * Step 8 (§10): "Illegal flick (turn lost): a short red pulse on the field
- * border." Fires whenever a flick ends the turn without scoring (rules.js's
- * `wallPlacer` opening with no goal — see main.js) — a plain red stroke
- * over the same rect `drawFieldEdge`/`drawVoidLedge` already outline,
- * fading out. Drawn regardless of field mode: VOID has no persistent
- * border, but the pulse is a temporary overlay on top of whatever edge
- * treatment is already there, not a replacement for it.
+ * border." Fires whenever a flick ends the turn without scoring (main.js
+ * compares `match.currentPlayer` before/after a tick — a flip with no goal
+ * means the turn ended) — a plain red stroke over the same rect
+ * `drawFieldEdge`/`drawVoidLedge` already outline, fading out. Drawn
+ * regardless of field mode: VOID has no persistent border, but the pulse is
+ * a temporary overlay on top of whatever edge treatment is already there,
+ * not a replacement for it.
  * @param {CanvasRenderingContext2D} ctx
  * @param {{scale: number, offsetX: number, offsetY: number}} transform
  * @param {number} alpha  0 (gone) -> 1 (peak, just triggered)
@@ -505,9 +506,13 @@ export function drawAimLine(ctx, transform, circles, inputState) {
  * @param {CanvasRenderingContext2D} ctx
  * @param {{scale: number, offsetX: number, offsetY: number}} transform
  * @param {import('./rules.js').MatchState} match
+ * @param {boolean} [isPlacingWall]  §7 (redesigned 2026-08-20): placement is
+ *   no longer its own turn-machine phase, but the timer still shouldn't
+ *   drain while a player is heads-down positioning their wall — same
+ *   "pauses while you're not actively deciding your shot" intent as before.
  */
-export function drawTurnTimer(ctx, transform, match) {
-  if (match.winner !== null || match.wallPlacer !== null) return;
+export function drawTurnTimer(ctx, transform, match, isPlacingWall = false) {
+  if (match.winner !== null || isPlacingWall) return;
   const { scale, offsetX, offsetY } = transform;
   const { w, h } = CONFIG.field;
   const { turnSeconds } = CONFIG.timers;
@@ -561,23 +566,35 @@ export function drawWall(ctx, transform, wall, color) {
 }
 
 /**
+ * Which colour token belongs to a wall's owner — the same cyan/amber split
+ * every other player-owned element (goals, turn timer, ARMED badge) already
+ * uses, extended here now that each player owns a permanent wall (§7,
+ * redesigned 2026-08-20) instead of the two of them sharing one neutral one.
+ * @param {'A' | 'B'} owner @returns {string}
+ */
+function wallOwnerColor(owner) {
+  return owner === 'A' ? CONFIG.colors.playerA : CONFIG.colors.playerB;
+}
+
+/**
  * §7: "legal positions are shown as a dimmed overlay of allowed grid
  * lines" — every candidate `orientation` placement that would currently
- * pass `isWallLegal`, drawn as one batched dim stroke. Only ~135-145
- * candidates per orientation on this field size; cheap enough to
- * recompute every frame rather than cache.
+ * pass `isWallLegal`, drawn as one batched dim stroke in the placing
+ * player's own colour. Only ~135-145 candidates per orientation on this
+ * field size; cheap enough to recompute every frame rather than cache.
  * @param {CanvasRenderingContext2D} ctx
  * @param {{scale: number, offsetX: number, offsetY: number}} transform
  * @param {'horizontal' | 'vertical'} orientation
  * @param {import('./physics.js').World} world
+ * @param {string} color
  */
-export function drawWallLegalOverlay(ctx, transform, orientation, world) {
+export function drawWallLegalOverlay(ctx, transform, orientation, world, color) {
   const { scale, offsetX, offsetY } = transform;
   const { w, h } = CONFIG.field;
   const { length } = CONFIG.wall;
 
   ctx.save();
-  ctx.strokeStyle = CONFIG.colors.wall;
+  ctx.strokeStyle = color;
   ctx.globalAlpha = 0.15;
   ctx.lineWidth = 3;
   ctx.beginPath();
@@ -611,16 +628,21 @@ export function drawWallLegalOverlay(ctx, transform, orientation, world) {
  * armed-player's target goal glowing hotter), the wall layer, pass line,
  * pieces, aim line, turn-timer bar, ARMED badge (§10 order — pass line
  * under the circles so circle glow isn't interrupted; aim line on top
- * since it must never be occluded). While wall placement is open (§7), the
- * confirmed wall is replaced by the legal-position overlay plus a live,
- * legality-colored preview instead — one wall shown at a time, not both.
+ * since it must never be occluded).
+ *
+ * §7 (redesigned 2026-08-20): both players' placed walls are drawn
+ * unconditionally, each in its owner's colour — unlike the old one-shared-
+ * wall system, there's no "placement open" state that hides the confirmed
+ * wall in favour of the overlay; a player can be actively placing their
+ * OWN wall while the other player's (already placed) wall sits on the
+ * field the whole time.
  * @param {CanvasRenderingContext2D} ctx
  * @param {number} viewportW @param {number} viewportH
  * @param {{x: number, y: number}[]} circles  interpolated, cell-space, fixed order
  * @param {{selectedIndex: number | null, direction: {x: number, y: number} | null, pull: number, rejectedIndex: number | null}} inputState
  * @param {import('./rules.js').MatchState} match
  * @param {import('./physics.js').World} world
- * @param {{preview: import('./physics.js').Wall | null}} [wallState]
+ * @param {{preview: import('./physics.js').Wall | null, placingFor: 'A' | 'B' | null}} [wallState]
  * @param {{position: {x: number, y: number}, alpha: number} | null} [fallingFade]  see drawFallingGhost
  * @param {{x: number, y: number}[]} [trail]  see drawTrail; defaults to empty (no trail)
  * @param {number | null} [passFlashProgress]  see drawPassLine
@@ -636,7 +658,7 @@ export function drawFrame(
   // the bottom goal (A's own end) — matches BUILD_SPEC.md §2's attack/own
   // mapping and the render.js colour convention already established.
   const armedGoal = match.armed ? (match.currentPlayer === 'A' ? 'top' : 'bottom') : null;
-  const placing = match.wallPlacer !== null && wallState?.preview;
+  const placing = wallState?.placingFor != null && wallState?.preview;
 
   drawBackground(ctx, viewportW, viewportH);
   drawGrid(ctx, transform);
@@ -646,10 +668,9 @@ export function drawFrame(
   drawGoals(ctx, transform, armedGoal);
   drawGoalFlash(ctx, transform, goalFlash);
 
+  for (const wall of world.walls) drawWall(ctx, transform, wall, wallOwnerColor(wall.owner));
   if (placing) {
-    drawWallLegalOverlay(ctx, transform, wallState.preview.orientation, world);
-  } else if (world.wall) {
-    drawWall(ctx, transform, world.wall, CONFIG.colors.wall);
+    drawWallLegalOverlay(ctx, transform, wallState.preview.orientation, world, wallOwnerColor(wallState.placingFor));
   }
 
   drawPassLine(ctx, transform, circles, inputState.selectedIndex, passFlashProgress);
@@ -657,11 +678,11 @@ export function drawFrame(
   drawPieces(ctx, transform, circles, inputState);
   drawFallingGhost(ctx, transform, fallingFade);
   drawAimLine(ctx, transform, circles, inputState);
-  drawTurnTimer(ctx, transform, match);
+  drawTurnTimer(ctx, transform, match, placing);
   drawArmedBadge(ctx, transform, match);
 
   if (placing) {
     const legal = isWallLegal(wallState.preview, world);
-    drawWall(ctx, transform, wallState.preview, legal ? CONFIG.colors.wall : CONFIG.colors.wallIllegal);
+    drawWall(ctx, transform, wallState.preview, legal ? wallOwnerColor(wallState.placingFor) : CONFIG.colors.wallIllegal);
   }
 }

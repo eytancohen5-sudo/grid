@@ -1,10 +1,10 @@
 // js/main.js — entry point, wiring, and the fixed-timestep accumulator loop
 // (BUILD_SPEC.md §5, hard rule 4). physics.js owns the simulation, input.js
-// owns drag-to-aim/wall placement, rules.js owns turn/armed/score/timer/wall
-// state; this file wires them together, interpolates physics state for
-// render, and owns the DOM lifecycle of the goal popup, HUD bar, win
-// overlay, and wall-placement controls (screen chrome, not canvas draws —
-// see index.html/styles.css).
+// owns drag-to-aim/wall-placement UI state, rules.js owns turn/armed/score/
+// timer/wall-legality state; this file wires them together, interpolates
+// physics state for render, and owns the DOM lifecycle of the goal popup,
+// HUD bar, win overlay, and wall-placement controls (screen chrome, not
+// canvas draws — see index.html/styles.css).
 
 import { setupContext, drawFrame, computeScale } from './render.js';
 import { createWorld, step, isSettled, checkFalls } from './physics.js';
@@ -12,7 +12,7 @@ import { attachInput } from './input.js';
 import {
   createMatchState, resetMatch, KICKOFF, onLaunch,
   tick as rulesTick, forfeitTurn, tickMatchClock,
-  isWallLegal, confirmWallPlacement, skipWallPlacement,
+  isWallLegal, placeWall, hasPlacedWall,
 } from './rules.js';
 import { lerp } from './vec.js';
 import { CONFIG } from './config.js';
@@ -25,12 +25,12 @@ if (!(popup instanceof HTMLElement)) throw new Error('missing #goal-popup elemen
 
 const scoreA = document.getElementById('score-a');
 const scoreB = document.getElementById('score-b');
-const wallUsesA = document.getElementById('wall-uses-a');
-const wallUsesB = document.getElementById('wall-uses-b');
+const wallButtonA = document.getElementById('wall-button-a');
+const wallButtonB = document.getElementById('wall-button-b');
 const matchClockEl = document.getElementById('match-clock');
 if (
   !(scoreA instanceof HTMLElement) || !(scoreB instanceof HTMLElement) ||
-  !(wallUsesA instanceof HTMLElement) || !(wallUsesB instanceof HTMLElement) ||
+  !(wallButtonA instanceof HTMLButtonElement) || !(wallButtonB instanceof HTMLButtonElement) ||
   !(matchClockEl instanceof HTMLElement)
 ) {
   throw new Error('missing HUD elements');
@@ -44,11 +44,11 @@ if (!(winOverlay instanceof HTMLElement) || !(winMessage instanceof HTMLElement)
 }
 
 const wallControls = document.getElementById('wall-controls');
-const wallSkipButton = document.getElementById('wall-skip');
+const wallCancelButton = document.getElementById('wall-cancel');
 const wallRotateButton = document.getElementById('wall-rotate');
 const wallConfirmButton = document.getElementById('wall-confirm');
 if (
-  !(wallControls instanceof HTMLElement) || !(wallSkipButton instanceof HTMLElement) ||
+  !(wallControls instanceof HTMLElement) || !(wallCancelButton instanceof HTMLElement) ||
   !(wallRotateButton instanceof HTMLElement) || !(wallConfirmButton instanceof HTMLButtonElement)
 ) {
   throw new Error('missing #wall-controls elements');
@@ -135,8 +135,6 @@ modeVoidButton.addEventListener('click', () => pickMode('void'));
 function updateHud() {
   scoreA.textContent = String(match.score.A);
   scoreB.textContent = String(match.score.B);
-  wallUsesA.textContent = String(match.wallUses.A);
-  wallUsesB.textContent = String(match.wallUses.B);
 }
 updateHud();
 
@@ -214,35 +212,59 @@ const input = attachInput(
   () => popupUntil !== null || match.winner !== null || !modeChosen
 );
 
+/** §7 (redesigned 2026-08-20): a player enters placement mode for their OWN
+ * permanent wall by tapping their side's button — no more automatic
+ * post-turn window. Available any time it's genuinely their turn (including
+ * mid-turn while armed, so a wall can set up a bounce shot, not just defend
+ * — this is what "each player manages their own wall" plus "a wall to
+ * bounce from" actually required; `enterPlacement`'s own enabled-state
+ * check in `updateWallControls` is what actually gates *when* the button
+ * can be pressed). */
+function enterPlacement(player) {
+  input.beginWallPlacement(player);
+  wallControls.classList.add('visible');
+}
+wallButtonA.addEventListener('click', () => enterPlacement('A'));
+wallButtonB.addEventListener('click', () => enterPlacement('B'));
+
 wallRotateButton.addEventListener('click', () => input.rotateWall());
-wallSkipButton.addEventListener('click', () => skipWallPlacement(match));
+wallCancelButton.addEventListener('click', () => {
+  input.cancelWallPlacement();
+  wallControls.classList.remove('visible');
+});
 wallConfirmButton.addEventListener('click', () => {
-  const preview = input.getWallState().preview;
-  if (preview) confirmWallPlacement(match, world, preview);
-  updateHud(); // wall-uses just changed
+  const { preview, placingFor } = input.getWallState();
+  if (preview && placingFor && placeWall(match, world, placingFor, preview)) {
+    input.cancelWallPlacement(); // exits placement mode — the wall is now permanent, nothing left to drag
+    wallControls.classList.remove('visible');
+  }
 });
 
-/** §7's placement window opens the instant `wallPlacer` is set (inside
- * rules.js's resolveFlick, synchronous with turn resolution) — but for a
- * non-winning GOAL specifically, that's the same instant the goal popup
- * starts its ~1.4s show. Gating the wall UI's own visibility on
- * `popupUntil === null` too avoids the confirm/rotate/skip controls
- * appearing underneath (and interactable through) that scrim. */
-let wallUiActive = false;
-function updateWallUi() {
-  const shouldShow = match.wallPlacer !== null && popupUntil === null && match.winner === null;
-  if (shouldShow && !wallUiActive) {
-    input.beginWallPlacement();
-    wallControls.classList.add('visible');
-    wallUiActive = true;
-  } else if (!shouldShow && wallUiActive) {
-    wallControls.classList.remove('visible');
-    wallUiActive = false;
+/**
+ * Keeps the wall-placement controls bar and each side's "Create Wall"
+ * button in sync every frame. The controls bar tracks input.js's own
+ * placement-mode state directly (no separate main.js flag to drift out of
+ * sync with it). Each button is enabled only when it's genuinely legal to
+ * START placing right now: that player's own turn (including mid-turn
+ * while armed — §7's offensive use case), the field settled with no flick
+ * in flight (can't sensibly drop a wall while circles are still moving),
+ * the match not over, a mode chosen, no popup covering the field, nobody
+ * already mid-placement (including yourself, until you cancel/confirm),
+ * and — permanent walls — not already placed.
+ */
+function updateWallControls() {
+  const { placingFor, preview } = input.getWallState();
+  wallControls.classList.toggle('visible', placingFor !== null);
+  if (placingFor !== null) {
+    wallConfirmButton.disabled = !preview || !isWallLegal(preview, world);
   }
-  if (wallUiActive) {
-    const preview = input.getWallState().preview;
-    wallConfirmButton.disabled = !preview || match.wallUses[match.wallPlacer] <= 0 || !isWallLegal(preview, world);
-  }
+
+  const canStartPlacing = (player) =>
+    placingFor === null && modeChosen && popupUntil === null && match.winner === null &&
+    match.currentPlayer === player && match.launchedIndex === null && isSettled(world) &&
+    !hasPlacedWall(world, player);
+  wallButtonA.disabled = !canStartPlacing('A');
+  wallButtonB.disabled = !canStartPlacing('B');
 }
 
 // Engine constant, not a CONFIG value — caps wall-clock frameTime before
@@ -278,7 +300,7 @@ function frame(now) {
   // and crossing detection is only meaningful step-by-step.
   while (accumulator >= CONFIG.physics.dt) {
     const wasPassedThisFlick = match.passedThisFlick;
-    const prevWallPlacer = match.wallPlacer;
+    const prevCurrentPlayer = match.currentPlayer;
 
     const contacts = step(world);
     const fallen = checkFalls(world); // VOID mode only; always [] in ARENA
@@ -292,14 +314,15 @@ function frame(now) {
     // passedThisFlick — the instant the crossing happens, not once the
     // whole flick later settles ("the player must learn the rule from this
     // flash"). Goal vs. "illegal flick, turn lost" are distinguished by
-    // rules.js's own already-tested wallPlacer invariant: it opens on every
-    // turn-ending case (goal or not), so a goal result takes priority and a
-    // bare wallPlacer-opened-with-no-goal is exactly the miss/contact/
-    // rollback case §10 calls "illegal."
+    // whether currentPlayer flipped this tick: every turn-ending case in
+    // rules.js flips it (goal-and-continue, contact, miss, rollback, VOID
+    // turnover) except a completed pass or an own goal, neither of which
+    // ends the turn — so a flip with no goal result is exactly the miss/
+    // contact/rollback case §10 calls "illegal."
     if (!wasPassedThisFlick && match.passedThisFlick) passFlashSince = now;
     if (result?.type === 'goal') {
       goalFlash = { scorer: result.scorer, since: now };
-    } else if (prevWallPlacer === null && match.wallPlacer !== null) {
+    } else if (prevCurrentPlayer !== match.currentPlayer) {
       illegalPulseSince = now;
     }
 
@@ -342,24 +365,27 @@ function frame(now) {
     popupUntil = null;
   }
 
-  updateWallUi();
+  updateWallControls();
 
   // §8a: the turn timer only counts down while nothing is moving, no flick
   // is in flight ("pauses while the physics are running"), not during the
-  // goal popup, and not while wall placement is open ("pauses... while the
-  // wall-placement step is open") — real wall-clock time, once per
+  // goal popup, and not while a player is placing their wall ("pauses...
+  // while the wall-placement step is open" — no longer a distinct turn-
+  // machine phase per the §7 redesign, but the same intent: don't let
+  // placement UI burn the decision clock) — real wall-clock time, once per
   // rendered frame, not tied to the fixed physics step. Also gated on
   // `modeChosen`: without it, a player still reading the mode picker burns
   // their first turn timer in the background and can get silently
   // forfeited before the match has visibly started.
   if (
-    modeChosen && match.winner === null && popupUntil === null && match.wallPlacer === null &&
+    modeChosen && match.winner === null && popupUntil === null && input.getWallState().placingFor === null &&
     match.launchedIndex === null && isSettled(world)
   ) {
     match.turnTimeLeft = Math.max(0, match.turnTimeLeft - rawElapsed);
     if (match.turnTimeLeft === 0) {
-      forfeitTurn(match); // always opens wallPlacer (this block's own guard already confirms it was null) — same "turn lost, no goal" signal as the physics loop above
-      illegalPulseSince = now;
+      const prevCurrentPlayer = match.currentPlayer;
+      forfeitTurn(match);
+      if (match.currentPlayer !== prevCurrentPlayer) illegalPulseSince = now; // always true — forfeitTurn always flips — kept explicit for symmetry with the physics-loop trigger above
     }
   }
 

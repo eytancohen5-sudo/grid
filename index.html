@@ -9,9 +9,9 @@
 <body>
   <canvas id="game"></canvas>
   <div id="hud">
-    <span class="hud-group"><span id="score-b">0</span><span id="wall-uses-b" class="wall-uses">5</span></span>
+    <span class="hud-group"><span id="score-b">0</span><button id="wall-button-b" class="wall-button" type="button">Wall</button></span>
     <span id="match-clock">5:00</span>
-    <span class="hud-group"><span id="wall-uses-a" class="wall-uses">5</span><span id="score-a">0</span></span>
+    <span class="hud-group"><button id="wall-button-a" class="wall-button" type="button">Wall</button><span id="score-a">0</span></span>
   </div>
   <div id="goal-popup"></div>
   <div id="win-overlay">
@@ -19,7 +19,7 @@
     <button id="play-again" type="button">Play again</button>
   </div>
   <div id="wall-controls">
-    <button id="wall-skip" type="button">Skip</button>
+    <button id="wall-cancel" type="button">Cancel</button>
     <button id="wall-rotate" type="button">Rotate</button>
     <button id="wall-confirm" type="button">Confirm</button>
   </div>

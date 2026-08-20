@@ -26,7 +26,18 @@ export const CONFIG = {
     settleTimeout: 6.0,
   },
   rules: { goalsToWin: 3, strictContact: true },
-  wall: { length: 2, clearance: 2.0, usesPerPlayer: 5, thickness: 0.18 },
+  // usesPerPlayer removed — each player now has exactly one permanent wall
+  // (redesigned 2026-08-20 from Eytan's live playtest feedback: a shared,
+  // 5-times-movable wall to one wall each, placed once, stays forever).
+  // "placed or not" is already answered by whether world.walls has an entry
+  // for that owner — a separate counter would just be redundant state.
+  // `clearance` now also gates the minimum distance BETWEEN the two walls,
+  // reusing the existing goal/circle clearance value rather than adding a
+  // second tunable — physics.js's sequential per-circle wall resolution
+  // requires this to stay above 2*piece.radius (0.8) or two walls close
+  // enough together can volley a circle between them; 2.0 clears that with
+  // comfortable margin.
+  wall: { length: 2, clearance: 2.0, thickness: 0.18 },
   timers: { turnSeconds: 20, matchSeconds: 300, matchClockEnabled: true },
 
   // --- Additions beyond §11 (hard rule 3: every tunable number lives here,
@@ -43,7 +54,10 @@ export const CONFIG = {
     playerB: '#F59E0B', // amber — top player, their goal, their turn
     piece: '#E2F6FF',
     pieceActive: '#FFFFFF',
-    wall: '#F8FAFC',
+    // wall: no longer its own token (2026-08-20) — each player's wall now
+    // renders in that player's own colour (playerA/playerB), matching every
+    // other player-owned element, now that walls are no longer neutral and
+    // shared.
     wallIllegal: '#EF4444',
     passLine: 'rgba(34, 211, 238, 0.35)', // #22D3EE at 35%
   },

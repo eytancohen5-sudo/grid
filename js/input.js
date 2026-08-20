@@ -14,8 +14,14 @@ import { isSettled, launchCircle } from './physics.js';
 /**
  * Wire up drag-to-aim and wall placement on `canvas`. The two are mutually
  * exclusive modes on the same pointer listeners (never active together —
- * `match.wallPlacer` gates which one a given pointer event drives), not two
+ * `placingFor` gates which one a given pointer event drives), not two
  * separate listener sets.
+ *
+ * §7 (redesigned 2026-08-20): placement is no longer a turn-machine window
+ * rules.js opens for you — it's local UI state a player enters on demand
+ * (via main.js's "Create Wall" button) any time it's genuinely their turn.
+ * rules.js stays headless/DOM-free either way (ADR-0002); this is exactly
+ * where that placement-*mode* state belongs instead.
  * @param {HTMLCanvasElement} canvas
  * @param {import('./physics.js').World} world
  * @param {import('./rules.js').MatchState} match
@@ -33,8 +39,9 @@ import { isSettled, launchCircle } from './physics.js';
  *   alone isn't enough once those exist.
  * @returns {{
  *   getState: () => { selectedIndex: number|null, direction: {x:number,y:number}|null, pull: number, rejectedIndex: number|null },
- *   getWallState: () => { preview: import('./physics.js').Wall | null },
- *   beginWallPlacement: () => void,
+ *   getWallState: () => { preview: import('./physics.js').Wall | null, placingFor: import('./rules.js').Player | null },
+ *   beginWallPlacement: (player: import('./rules.js').Player) => void,
+ *   cancelWallPlacement: () => void,
  *   rotateWall: () => void,
  * }}
  */
@@ -51,6 +58,10 @@ export function attachInput(canvas, world, match, getTransform, onLaunch, isInpu
 
   /** @type {import('./physics.js').Wall | null} */
   let wallPreview = null;
+  /** @type {import('./rules.js').Player | null} which player is currently
+   * placing their wall, or null if nobody is — the mode gate every pointer
+   * handler below routes on. */
+  let placingFor = null;
 
   /** clientX/clientY -> canvas-relative CSS pixels -> cell space. */
   function pointerToCell(e) {
@@ -109,14 +120,25 @@ export function attachInput(canvas, world, match, getTransform, onLaunch, isInpu
     return { x: Math.max(0, Math.min(w, x)), y: Math.max(0, Math.min(h - wallLength, y)), orientation };
   }
 
-  /** Call once when `match.wallPlacer` transitions from null to a player —
-   * seeds the preview from the existing wall (moving it) or a sensible
-   * default (placing a new one), so something legible is visible before
-   * the player's first touch, not just after. */
-  function beginWallPlacement() {
-    wallPreview = world.wall
-      ? { ...world.wall }
-      : snapWallPosition({ x: CONFIG.field.w / 2, y: CONFIG.field.h / 2 }, 'horizontal');
+  /** Enters placement mode for `player` — always a brand-new wall (§7
+   * redesign: permanent once placed, never moved), seeded at a sensible
+   * default so something legible is visible before the player's first
+   * touch, not just after. Caller (main.js) is responsible for only
+   * offering this when it's actually legal to call (that player's own
+   * turn, they haven't placed yet) — `placeWall` re-validates regardless.
+   * @param {import('./rules.js').Player} player
+   */
+  function beginWallPlacement(player) {
+    placingFor = player;
+    wallPreview = snapWallPosition({ x: CONFIG.field.w / 2, y: CONFIG.field.h / 2 }, 'horizontal');
+  }
+
+  /** Exits placement mode without committing anything — no cost, since
+   * nothing was ever spent (§7 redesign: there's no "skip your turn to
+   * place" budget anymore, just "did or didn't get around to it yet"). */
+  function cancelWallPlacement() {
+    placingFor = null;
+    wallPreview = null;
   }
 
   /** Tap-a-control rotate (§7). Keeps the segment's centre roughly fixed
@@ -150,7 +172,7 @@ export function attachInput(canvas, world, match, getTransform, onLaunch, isInpu
   // --- Shared pointer routing ------------------------------------------
 
   function onPointerDown(e) {
-    if (match.wallPlacer !== null) return onWallPointerDown(e);
+    if (placingFor !== null) return onWallPointerDown(e);
     if (activePointerId !== null) return; // one active drag at a time — ignore concurrent touches
     const cell = pointerToCell(e);
     const nearest = findNearestInRange(cell);
@@ -172,13 +194,13 @@ export function attachInput(canvas, world, match, getTransform, onLaunch, isInpu
   }
 
   function onPointerMove(e) {
-    if (match.wallPlacer !== null) return onWallPointerMove(e);
+    if (placingFor !== null) return onWallPointerMove(e);
     if (e.pointerId !== activePointerId || selectedIndex === null) return;
     updateDrag(selectedIndex, pointerToCell(e));
   }
 
   function onPointerUp(e) {
-    if (match.wallPlacer !== null) return onWallPointerUp(e);
+    if (placingFor !== null) return onWallPointerUp(e);
     if (e.pointerId !== activePointerId) return;
     if (pull >= CONFIG.input.minPull && selectedIndex !== null && direction !== null) {
       const speed = (pull / CONFIG.input.maxPull) * CONFIG.physics.maxSpeed;
@@ -212,8 +234,8 @@ export function attachInput(canvas, world, match, getTransform, onLaunch, isInpu
   }
 
   function getWallState() {
-    return { preview: wallPreview };
+    return { preview: wallPreview, placingFor };
   }
 
-  return { getState, getWallState, beginWallPlacement, rotateWall };
+  return { getState, getWallState, beginWallPlacement, cancelWallPlacement, rotateWall };
 }

@@ -44,6 +44,9 @@ const DRAG_FACTOR = Math.exp(-CONFIG.physics.drag * CONFIG.physics.dt);
  * @property {number} y
  * @property {'horizontal' | 'vertical'} orientation  spans (x,y) to
  *   (x+CONFIG.wall.length, y) if horizontal, (x, y+CONFIG.wall.length) if vertical
+ * @property {'A' | 'B'} owner  §7 (redesigned 2026-08-20): each player has
+ *   their own permanent wall — this is which one it is, for render.js's
+ *   owner colouring and rules.js's "has this player already placed" check.
  */
 
 /**
@@ -54,7 +57,10 @@ const DRAG_FACTOR = Math.exp(-CONFIG.physics.drag * CONFIG.physics.dt);
  *   isSettled() is true. Plain field on the returned object — a test can
  *   preset it directly (e.g. `world.motionTime = 6.0`) to exercise the
  *   6-second cap without stepping 720 real frames.
- * @property {Wall | null} wall  §7: at most one wall exists on the field, shared
+ * @property {Wall[]} walls  §7: each player places at most one, permanent
+ *   once placed — 0, 1, or 2 entries depending on match progress. physics.js
+ *   itself doesn't care how many or whose; it just resolves collision
+ *   against whatever is here.
  */
 
 /**
@@ -69,7 +75,7 @@ export function createWorld(positions) {
       fallen: false,
     })),
     motionTime: 0,
-    wall: null,
+    walls: [],
   };
 }
 
@@ -188,7 +194,7 @@ export function step(world) {
     c.rawY = c.y;
 
     if (CONFIG.field.mode !== 'void') resolveRails(c);
-    if (world.wall) resolveWallCollision(c, world.wall);
+    for (const wall of world.walls) resolveWallCollision(c, wall);
     restSnap(c);
   }
   const contacts = resolveCircleCollisions(world);

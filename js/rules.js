@@ -79,18 +79,13 @@ export const KICKOFF = {
  * @property {boolean} suddenDeath  §8b: set once the match clock hits 0:00
  *   while the score is level — from then on ANY goal wins outright,
  *   regardless of `CONFIG.rules.goalsToWin`
- * @property {Player | null} wallPlacer  §7: "at the end of your turn,
- *   before control passes over" — set to whichever player's turn JUST
- *   ended (never the player about to act next), opening their wall
- *   placement/move/skip window. Only set on an actual turn change (cases
- *   3/4/6, a non-winning goal, or a forfeit) — never on a completed pass
- *   (case 5, same player continues) or an own goal (no turnover) or the
- *   winning goal (no next turn to defend against). `currentPlayer` has
- *   already flipped to the next actor by the time this is set — the two
- *   are deliberately different fields, not the same value read two ways.
- * @property {{A: number, B: number}} wallUses  §7: 5 placements per player,
- *   TUNABLE `CONFIG.wall.usesPerPlayer` — never replenishes mid-match
  */
+// §7 (redesigned 2026-08-20, from Eytan's live playtest feedback): the wall
+// is no longer turn-machine state at all. There's no placement WINDOW that
+// opens and closes — a player may place their own permanent wall any time
+// it's genuinely their turn to act (their own drag-to-aim gate, reused —
+// see input.js), so `MatchState` carries nothing wall-related; `world.walls`
+// (physics.js) and `isWallLegal`/`placeWall` below are the whole surface.
 
 /**
  * Who takes the very first turn of the match — §3/§9 only define kick-off
@@ -119,8 +114,6 @@ export function createMatchState(firstPlayer = 'A') {
     turnTimeLeft: CONFIG.timers.turnSeconds,
     matchTimeLeft: CONFIG.timers.matchSeconds,
     suddenDeath: false,
-    wallPlacer: null,
-    wallUses: { A: CONFIG.wall.usesPerPlayer, B: CONFIG.wall.usesPerPlayer },
   };
 }
 
@@ -150,7 +143,6 @@ export function forfeitTurn(match) {
   match.currentPlayer = opponent(endingPlayer);
   match.armed = false;
   match.turnTimeLeft = CONFIG.timers.turnSeconds;
-  match.wallPlacer = endingPlayer; // §7: a forfeited turn is still "the end of your turn"
   logTurnEnd(match);
 }
 
@@ -201,17 +193,20 @@ export function resetMatch(match, world) {
   match.turnTimeLeft = CONFIG.timers.turnSeconds;
   match.matchTimeLeft = CONFIG.timers.matchSeconds;
   match.suddenDeath = false;
-  match.wallPlacer = null;
-  match.wallUses = { A: CONFIG.wall.usesPerPlayer, B: CONFIG.wall.usesPerPlayer };
-  world.wall = null;
+  world.walls = []; // §7: permanent for the match, but "Play again" is a genuinely fresh match
   resetWorld(world, KICKOFF.A);
 }
 
 /**
- * §7's three legality conditions, checked only at placement (the wall stays
- * legal afterward even if circles later rest near it): entirely inside the
- * field, >= CONFIG.wall.clearance cells from each goal-mouth segment, and
- * >= clearance from each circle's centre.
+ * §7's legality conditions, checked only at placement (a wall stays legal
+ * afterward even if circles later rest near it): entirely inside the field,
+ * >= CONFIG.wall.clearance cells from each goal-mouth segment, from each
+ * circle's centre, AND (redesigned 2026-08-20: two permanent walls can now
+ * coexist) from the other player's wall, if it's been placed yet. Reuses
+ * the same `clearance` value rather than adding a second tunable — must
+ * stay above 2*piece.radius (0.8) for physics.js's sequential per-circle
+ * wall resolution to never volley a circle between two walls that are too
+ * close together; 2.0 clears that with comfortable margin.
  * @param {import('./physics.js').Wall} wall @param {import('./physics.js').World} world
  * @returns {boolean}
  */
@@ -233,38 +228,40 @@ export function isWallLegal(wall, world) {
     if (pointSegmentDistance(c, p1, p2) < clearance) return false;
   }
 
+  for (const other of world.walls) {
+    const otherEnds = wallEndpoints(other);
+    if (segmentSegmentDistance(p1, p2, otherEnds.p1, otherEnds.p2) < clearance) return false;
+  }
+
   return true;
 }
 
+/** @param {import('./physics.js').World} world @param {Player} player @returns {boolean} */
+export function hasPlacedWall(world, player) {
+  return world.walls.some((w) => w.owner === player);
+}
+
 /**
- * Commits a wall placement/move: spends one of `wallPlacer`'s uses, sets
- * `world.wall`, and closes the placement window. Re-validates legality
- * itself rather than trusting the caller — input.js's UI already prevents
- * confirming an illegal position, but this is the actual gate, not that.
- * No-op (returns false) if called illegally: no `wallPlacer` open, the
- * player is out of uses, or the wall itself doesn't check out.
+ * Places `player`'s one permanent wall (§7, redesigned 2026-08-20: no more
+ * turn-machine placement window — a player deploys their wall whenever they
+ * choose, on their own turn). Re-validates every condition itself rather
+ * than trusting the caller — input.js's UI already prevents confirming an
+ * illegal position, but this is the actual gate, not that. No-op (returns
+ * false) if called illegally: not this player's turn, they've already
+ * placed theirs, or the wall itself doesn't check out. There is no "move"
+ * or "skip" concept anymore — once placed, permanent; if never placed,
+ * simply never placed, no penalty either way.
  * @param {MatchState} match @param {import('./physics.js').World} world
- * @param {import('./physics.js').Wall} wall
+ * @param {Player} player @param {import('./physics.js').Wall} wall
  * @returns {boolean} whether the placement was actually committed
  */
-export function confirmWallPlacement(match, world, wall) {
-  if (match.wallPlacer === null) return false;
-  if (match.wallUses[match.wallPlacer] <= 0) return false;
+export function placeWall(match, world, player, wall) {
+  if (match.currentPlayer !== player) return false; // only on your own turn — same principle as aiming
+  if (hasPlacedWall(world, player)) return false;
   if (!isWallLegal(wall, world)) return false;
 
-  world.wall = { x: wall.x, y: wall.y, orientation: wall.orientation };
-  match.wallUses[match.wallPlacer] -= 1;
-  match.wallPlacer = null;
+  world.walls.push({ x: wall.x, y: wall.y, orientation: wall.orientation, owner: player });
   return true;
-}
-
-/**
- * "Skipping is always allowed and costs nothing" (§7) — closes the
- * placement window without touching `world.wall` or spending a use.
- * @param {MatchState} match
- */
-export function skipWallPlacement(match) {
-  match.wallPlacer = null;
 }
 
 /** @param {Player} player @returns {Player} */
@@ -432,7 +429,6 @@ function resolveFlick(match, world, idx) {
 
     resetWorld(world, KICKOFF[conceder]);
     match.currentPlayer = conceder;
-    match.wallPlacer = scorer; // §7: the scorer's turn just ended too — their placement window, before the conceder's kick-off turn begins
     logTurnEnd(match);
     return { type: 'goal', scorer, conceder, winner: null };
   }
@@ -445,10 +441,8 @@ function resolveFlick(match, world, idx) {
     launched.y = launched.prevY = launched.rawY = start.y;
     launched.vx = 0;
     launched.vy = 0;
-    const endingPlayer = match.currentPlayer;
-    match.currentPlayer = opponent(endingPlayer);
+    match.currentPlayer = opponent(match.currentPlayer);
     match.armed = false;
-    match.wallPlacer = endingPlayer;
     logTurnEnd(match);
     return null;
   }
@@ -458,26 +452,21 @@ function resolveFlick(match, world, idx) {
   // turn") — always true in v1 (no settings screen), but reading the CONFIG
   // value rather than hardcoding makes it the flag's first real consumer.
   if (CONFIG.rules.strictContact && match.touchedThisFlick) {
-    const endingPlayer = match.currentPlayer;
-    match.currentPlayer = opponent(endingPlayer);
+    match.currentPlayer = opponent(match.currentPlayer);
     match.armed = false;
-    match.wallPlacer = endingPlayer;
     logTurnEnd(match);
     return null;
   }
 
-  // Case 5: pass completed -> armed, same player continues. Turn hasn't
-  // ended, so no wall-placement window opens here.
+  // Case 5: pass completed -> armed, same player continues.
   if (match.passedThisFlick) {
     match.armed = true;
     return null;
   }
 
   // Case 6: none of the above -> turn ends.
-  const endingPlayer = match.currentPlayer;
-  match.currentPlayer = opponent(endingPlayer);
+  match.currentPlayer = opponent(match.currentPlayer);
   match.armed = false;
-  match.wallPlacer = endingPlayer;
   logTurnEnd(match);
   return null;
 }
@@ -486,10 +475,7 @@ function resolveFlick(match, world, idx) {
  * VOID mode's fall penalty (§5): "the opponent is awarded a goal" (the
  * faller's turn is treated as conceding, same downstream flow as a normal
  * goal — kick-off, win-check) or "the turn simply ends and the fallen
- * circle respawns," per `CONFIG.modes.void.voidPenalty`. Either way this
- * is the FALLER's flick concluding — matches every other case's rule that
- * `wallPlacer` goes to whoever was `currentPlayer` when the flick ended,
- * not whoever benefits from the outcome.
+ * circle respawns," per `CONFIG.modes.void.voidPenalty`.
  * @param {MatchState} match @param {import('./physics.js').World} world @param {number} idx
  */
 function resolveFall(match, world, idx) {
@@ -513,7 +499,6 @@ function resolveFall(match, world, idx) {
 
     resetWorld(world, KICKOFF[faller]); // faller concedes, takes the next kick-off turn
     match.currentPlayer = faller;
-    match.wallPlacer = faller;
     logTurnEnd(match);
     return { type: 'goal', scorer: opp, conceder: faller, winner: null };
   }
@@ -524,7 +509,6 @@ function resolveFall(match, world, idx) {
   respawnCircle(world, idx, findRespawnPosition(world, idx));
   match.currentPlayer = opp;
   match.armed = false;
-  match.wallPlacer = faller;
   logTurnEnd(match);
   return null;
 }

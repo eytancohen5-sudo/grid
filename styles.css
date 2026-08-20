@@ -87,15 +87,30 @@ canvas {
   text-shadow: 0 0 8px currentColor;
 }
 
-/* §10 HUD order: "[B score]·[wall uses B]·[match clock]·[wall uses A]·[A score]".
-   Same colour as the adjacent score, dimmer/smaller — a secondary reading,
-   not competing with the score for attention. */
-.wall-uses {
+/* §7 (redesigned 2026-08-20): "a button on each side, 'create a wall'."
+   HUD order unchanged from §10's original "[B score]·[wall B]·[clock]·
+   [wall A]·[A score]" — the wall-uses number is now this button instead.
+   Same colour as the adjacent score, dimmer/smaller — a secondary control,
+   not competing with the score for attention — until it's actually
+   pressable, where full opacity/pointer cursor cues "this does something
+   right now." Disabled (not your turn, or already placed) reads as inert
+   text, same visual weight the old wall-uses number had. */
+.wall-button {
+  font-family: inherit;
   font-size: 0.6em;
   opacity: 0.55;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: default;
 }
-#wall-uses-b { color: #F59E0B; }
-#wall-uses-a { color: #22D3EE; }
+.wall-button:not(:disabled) {
+  opacity: 1;
+  cursor: pointer;
+  text-decoration: underline;
+}
+#wall-button-b { color: #F59E0B; }
+#wall-button-a { color: #22D3EE; }
 
 /* §8b: "shown in the HUD, centred, small. It turns amber under 60 seconds." */
 #match-clock {
@@ -146,11 +161,13 @@ canvas {
   cursor: pointer;
 }
 
-/* Wall placement controls (§7): "tap a rotate control... confirm button
-   commits and spends the use... skipping is always allowed." A plain DOM
-   bar (same reasoning as the goal popup/HUD — these are discrete tap
-   targets, not part of the simulated field) fixed above the safe-area
-   bottom inset so it's always reachable one-handed. */
+/* Wall placement controls (§7, redesigned 2026-08-20): shown while a
+   player is actively positioning their own permanent wall — rotate, cancel
+   (closes the dialog, nothing spent, can reopen any time on your turn), or
+   confirm (permanent — no more "spends a use," there's only ever one).
+   A plain DOM bar (same reasoning as the goal popup/HUD — these are
+   discrete tap targets, not part of the simulated field) fixed above the
+   safe-area bottom inset so it's always reachable one-handed. */
 #wall-controls {
   display: none;
   position: fixed;
@@ -178,7 +195,7 @@ canvas {
 }
 
 #wall-confirm {
-  border-color: #F8FAFC; /* CONFIG.colors.wall — the primary/affirmative action */
+  border-color: #F8FAFC; /* bright/neutral — the primary/affirmative action, same treatment as #play-again's border, not tied to either player's own wall colour */
 }
 
 #wall-confirm:disabled {

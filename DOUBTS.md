@@ -306,6 +306,80 @@ stalled session. Flagging so it's a visible, deliberate deviation, not a silent 
   §10/§12 list. Flagging only because "polish" steps are the kind where scope tends to
   creep, and I wanted to be explicit that I held the line.
 
+## Post-build: wall mechanic redesign (2026-08-20, from live playtest feedback) — 65/65 tests passing
+
+Eytan tested the shipped build and reported the wall never seemed to be available to either
+player. Traced it two ways (headless: the turn-machine state transitions correctly; live
+code read: the wiring looked right) before concluding it wasn't a bug — it was the actual
+designed behaviour just not matching what he expected. He confirmed: he wants each player to
+own a permanent wall, placed once via a dedicated button, not a shared wall that opens
+automatically after a turn ends. Full redesign, not a patch:
+
+- **What changed**: one shared wall with 5 movable placements per player → two permanent
+  walls, one per player, placed once via a "Create Wall" button on their own turn (including
+  mid-turn while armed, so a wall can set up an offensive bounce shot, not just defend).
+  Touched every file in the codebase except vec.js: rules.js (`wallPlacer`/`wallUses`/
+  `confirmWallPlacement`/`skipWallPlacement` all gone, replaced by `placeWall`/
+  `hasPlacedWall`; `world.wall` → `world.walls[]`), physics.js (collision loops over all
+  walls now), input.js (placement mode moved out of rules.js into local UI state — it was
+  never really turn-machine state, just modeled as some at the time), render.js (both
+  walls always drawn, owner-coloured), main.js (two new buttons, the enable/disable logic,
+  and a full rewrite of how the step-8 "illegal flick" red-pulse effect detects a turn
+  ending — it used to key off `wallPlacer` opening, which no longer exists; now keys off
+  `currentPlayer` flipping with no goal, which is the same signal every other turn-ending
+  test in the suite already independently confirms). Rewrote the wall section of
+  BUILD_SPEC.md (§4, §7, §10, §11, §13) to match.
+- **Two-agent-dispatch rejections again, same as overnight** — tried routing through
+  `@champ` (this project's mandatory session entry point) given the scale of the change;
+  it worked once and produced a genuinely useful routing plan and design-decision menu, but
+  the follow-up `designer` dispatch got declined. Given the established pattern from
+  overnight, switched to implementing directly rather than re-attempting — using champ's
+  own recommendations as the spec, since they were already grounded in the real physics
+  constraints (the 0.8-cell wall-clearance floor in particular came from actually reading
+  physics.js's collision-resolution order, not a guess).
+- **Two design questions resolved directly with Eytan rather than guessed**: (1) his two
+  messages genuinely contradicted each other (movable-every-round vs. placed-once-
+  permanent) — asked directly, confirmed permanent. (2) whether "create a wall" means
+  drag-to-position or an instant auto-placed tap — asked directly, confirmed drag-to-
+  position (reuses the existing, already-built rotate/confirm UI).
+- **Several smaller design calls made without a live ruling, using champ's recommendations
+  as the default** — flagging individually since these weren't confirmed with Eytan the
+  way the two above were: (a) wall-to-wall clearance reuses the same 2.0-cell value as
+  every other clearance check, not a separate tunable; (b) a player is never forced to
+  place before some deadline — can finish the whole match without ever placing; (c) walls
+  persist across kick-offs and are only cleared by "Play again" (this also fixes a
+  pre-existing spec/code mismatch: BUILD_SPEC.md previously claimed the wall was removed at
+  kick-off, but the shipped physics.js code never actually did that — the text was already
+  wrong before this redesign, now corrected to match); (d) no VOID-mode-specific rule
+  change — a permanent wall angled to deflect the opponent off the field in VOID's
+  no-rails setup is a stronger scoring engine than the old movable wall was (nobody can
+  ever reposition it away), shipped as-is per the same "flag it, let playtesting decide"
+  approach the spec already takes with other VOID balance questions, not fixed unilaterally.
+- **Live-tested the actual click flow** (not just the headless functions) against a real
+  page load, since the wiring in main.js was the highest-risk part of this change: clicking
+  "Create Wall" → Confirm actually commits a wall and closes the dialog; attempting a
+  second placement for the same player is correctly refused (dialog stays open, nothing
+  added); attempting to place out of turn is correctly refused. All three via genuine
+  DOM click events, not synthetic function calls, so this exercises the real button
+  wiring, not just rules.js in isolation. What I could NOT verify live: how promptly the
+  disabled/enabled visual state of each "Create Wall" button refreshes after something
+  changes — that update only happens inside the render loop, which this specific sandboxed
+  browser tool suspends unless the tab is actively "visible" to it (same limitation as
+  every rAF-dependent thing all session) — should behave normally on a real, actively-
+  viewed phone screen, but genuinely wasn't provable here.
+- **Also checked (unrelated) — "no limit on how far I can pull"**: re-verified the pull-
+  distance/speed cap directly against the current code (6 cells → identical speed no
+  matter how much further you pull, tested up to 50 cells) — the cap is correctly in
+  place. If this is still visible after the redeploy below, it likely means whichever URL
+  is being tested was serving an older cached copy, not a code bug — worth a hard refresh
+  first.
+- **Deploy note**: this redesign is being pushed to the GitHub Pages copy
+  (eytancohen5-sudo.github.io/grid) as part of this same session. It has NOT yet been
+  copied into `10seconds.com/grid` (a separate, parallel session's deploy target, copied
+  files rather than a live pull from this repo — see project memory) — that copy step
+  touches a different project's directory outside Akh Sheli, and I didn't want to act on
+  another session's territory without confirming first.
+
 ## Full build — all 8 steps complete, 67/67 tests passing
 
 Every numbered step in §12 is now built: field, launch, rules, goals, timers, wall,

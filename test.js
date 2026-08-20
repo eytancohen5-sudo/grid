@@ -8,10 +8,10 @@ import assert from 'node:assert/strict';
 import { computeScale } from './js/render.js';
 import { CONFIG } from './js/config.js';
 import { normalize } from './js/vec.js';
-import { createWorld, step, launchCircle, restSnap, checkFalls, goalXRange } from './js/physics.js';
+import { createWorld, step, launchCircle, restSnap, checkFalls, goalXRange, resetWorld } from './js/physics.js';
 import {
   KICKOFF, createMatchState, resetMatch, onLaunch, tick, forfeitTurn, tickMatchClock,
-  isWallLegal, confirmWallPlacement, skipWallPlacement,
+  isWallLegal, placeWall, hasPlacedWall,
 } from './js/rules.js';
 
 const { w, h } = CONFIG.field;
@@ -609,8 +609,15 @@ check('rules: sudden death — any goal wins outright, even with the score still
 });
 
 // --- Step 6: the wall (§5 Wall subsection, §7) ------------------------------
+// Redesigned 2026-08-20 from Eytan's live playtest feedback: one shared,
+// 5-times-movable wall became two permanent, one-shot, player-owned walls.
+// The old wallPlacer/wallUses/confirmWallPlacement/skipWallPlacement tests
+// are gone, not just renamed — but the turn-ending invariants they
+// incidentally also pinned (turn ends on cases 4/6, stays open on case 5 or
+// an own goal) are independently covered via `currentPlayer`/`armed` in the
+// step 3 section above, so nothing is lost by deleting them outright.
 
-check('rules: isWallLegal — a wall away from goals and circles is legal', () => {
+check('rules: isWallLegal — a wall away from goals, circles, and other walls is legal', () => {
   const world = kickoffWorld();
   assert.equal(isWallLegal({ x: 4, y: 7, orientation: 'horizontal' }, world), true);
 });
@@ -630,106 +637,66 @@ check('rules: isWallLegal — a placement that would extend outside the field is
   assert.equal(isWallLegal({ x: 9, y: 7, orientation: 'horizontal' }, world), false); // x=9..11 > w=10
 });
 
-check('rules: confirmWallPlacement — legal placement spends a use, sets world.wall, closes the window', () => {
+check('rules: isWallLegal — within clearance of the OTHER player\'s already-placed wall is illegal', () => {
+  // Circles parked well clear of both test positions — this test is
+  // isolating wall-vs-wall clearance specifically, not circle clearance
+  // (already covered above).
+  const world = createWorld([{ x: 1, y: 1 }, { x: 1, y: 2 }, { x: 1, y: 3 }]);
+  world.walls.push({ x: 4, y: 7, orientation: 'horizontal', owner: 'A' });
+  assert.equal(isWallLegal({ x: 4, y: 7.5, orientation: 'horizontal' }, world), false, 'well within clearance of A\'s wall');
+  assert.equal(isWallLegal({ x: 4, y: 10, orientation: 'horizontal' }, world), true, 'far enough away (>= 2.0 cells, clear of goals too) is still legal');
+});
+
+check('rules: placeWall — legal placement on your own turn commits, tagged with the right owner', () => {
   const world = kickoffWorld();
-  const match = createMatchState();
-  match.wallPlacer = 'A';
-  const usesBefore = match.wallUses.A;
+  const match = createMatchState(); // Player A's turn
   const wall = { x: 4, y: 7, orientation: 'horizontal' };
-  const ok = confirmWallPlacement(match, world, wall);
+  const ok = placeWall(match, world, 'A', wall);
   assert.equal(ok, true);
-  assert.equal(match.wallUses.A, usesBefore - 1);
-  assert.equal(match.wallPlacer, null);
-  assert.deepEqual(world.wall, wall);
+  assert.equal(world.walls.length, 1);
+  assert.deepEqual(world.walls[0], { ...wall, owner: 'A' });
 });
 
-check('rules: confirmWallPlacement — an illegal wall is rejected, nothing changes', () => {
+check('rules: placeWall — an illegal position is rejected, nothing changes', () => {
   const world = kickoffWorld();
   const match = createMatchState();
-  match.wallPlacer = 'A';
-  const usesBefore = match.wallUses.A;
-  const ok = confirmWallPlacement(match, world, { x: 4, y: 1, orientation: 'horizontal' });
+  const ok = placeWall(match, world, 'A', { x: 4, y: 1, orientation: 'horizontal' });
   assert.equal(ok, false);
-  assert.equal(match.wallUses.A, usesBefore);
-  assert.equal(world.wall, null);
-  assert.equal(match.wallPlacer, 'A', 'placement window stays open on rejection');
+  assert.equal(world.walls.length, 0);
 });
 
-check('rules: confirmWallPlacement — rejected once a player is out of uses, even for an otherwise-legal wall', () => {
+check('rules: placeWall — rejected when it\'s not that player\'s turn', () => {
   const world = kickoffWorld();
-  const match = createMatchState();
-  match.wallPlacer = 'A';
-  match.wallUses.A = 0;
-  const ok = confirmWallPlacement(match, world, { x: 4, y: 7, orientation: 'horizontal' });
+  const match = createMatchState(); // Player A's turn
+  const ok = placeWall(match, world, 'B', { x: 4, y: 7, orientation: 'horizontal' });
   assert.equal(ok, false);
-  assert.equal(world.wall, null);
+  assert.equal(world.walls.length, 0);
 });
 
-check('rules: skipWallPlacement — "always allowed and costs nothing"', () => {
-  const match = createMatchState();
-  match.wallPlacer = 'B';
-  const usesBefore = match.wallUses.B;
-  skipWallPlacement(match);
-  assert.equal(match.wallPlacer, null);
-  assert.equal(match.wallUses.B, usesBefore);
-});
-
-check('rules: wallPlacer opens for the ending player on a miss (case 6), and closes only via confirm/skip', () => {
+check('rules: placeWall — rejected once a player has already placed theirs, even at a different legal spot', () => {
   const world = kickoffWorld();
   const match = createMatchState();
-  runFlick(world, match, 0, { x: -1, y: 0 }, 10);
-  assert.equal(match.wallPlacer, 'A');
+  assert.equal(placeWall(match, world, 'A', { x: 4, y: 7, orientation: 'horizontal' }), true);
+  const secondAttempt = placeWall(match, world, 'A', { x: 4, y: 10, orientation: 'horizontal' });
+  assert.equal(secondAttempt, false);
+  assert.equal(world.walls.length, 1, 'still only the first one');
 });
 
-check('rules: wallPlacer opens for the ending player on contact (case 4)', () => {
+check('rules: placeWall — allowed mid-turn while armed (a wall placed after a completed pass, to set up a bounce shot)', () => {
   const world = kickoffWorld();
   const match = createMatchState();
-  const target = world.circles[1];
-  runFlick(world, match, 0, { x: target.x - world.circles[0].x, y: target.y - world.circles[0].y }, 10);
-  assert.equal(match.wallPlacer, 'A');
+  match.armed = true; // simulates a pass already completed this turn — still Player A's turn
+  assert.equal(placeWall(match, world, 'A', { x: 4, y: 7, orientation: 'horizontal' }), true);
 });
 
-check('rules: wallPlacer stays closed on a completed pass (case 5) — turn has not ended', () => {
+check('rules: hasPlacedWall — tracks each player independently', () => {
   const world = kickoffWorld();
   const match = createMatchState();
-  const [c1, c2] = [world.circles[1], world.circles[2]];
-  const mid = { x: (c1.x + c2.x) / 2, y: (c1.y + c2.y) / 2 };
-  runFlick(world, match, 0, { x: mid.x - world.circles[0].x, y: mid.y - world.circles[0].y }, 15);
-  assert.equal(match.armed, true);
-  assert.equal(match.wallPlacer, null);
-});
-
-check('rules: wallPlacer stays closed on an own goal — no turnover', () => {
-  const world = kickoffWorld();
-  const match = createMatchState();
-  runFlick(world, match, 0, { x: 0, y: 1 }, 5);
-  assert.equal(match.wallPlacer, null);
-});
-
-check('rules: wallPlacer opens for the SCORER on a non-winning goal — their turn ended too', () => {
-  const world = kickoffWorld();
-  const match = createMatchState();
-  match.armed = true;
-  runFlick(world, match, 0, { x: 0, y: -1 }, 22);
-  assert.equal(match.wallPlacer, 'A');
-});
-
-check('rules: wallPlacer stays closed on the WINNING goal — no next turn to defend against', () => {
-  const world = kickoffWorld();
-  const match = createMatchState();
-  match.score.A = CONFIG.rules.goalsToWin - 1;
-  match.armed = true;
-  runFlick(world, match, 0, { x: 0, y: -1 }, 22);
-  assert.equal(match.winner, 'A');
-  assert.equal(match.wallPlacer, null);
-});
-
-check('rules: forfeitTurn opens wallPlacer for whoever just lost the turn to the clock', () => {
-  const match = createMatchState();
-  match.currentPlayer = 'B';
-  forfeitTurn(match);
-  assert.equal(match.currentPlayer, 'A');
-  assert.equal(match.wallPlacer, 'B');
+  assert.equal(hasPlacedWall(world, 'A'), false);
+  assert.equal(hasPlacedWall(world, 'B'), false);
+  placeWall(match, world, 'A', { x: 4, y: 7, orientation: 'horizontal' });
+  assert.equal(hasPlacedWall(world, 'A'), true);
+  assert.equal(hasPlacedWall(world, 'B'), false, 'B placing nothing is untouched by A placing theirs');
 });
 
 check('physics: wall flat-side collision — normal component reflects by restWall, tangential untouched', () => {
@@ -737,7 +704,7 @@ check('physics: wall flat-side collision — normal component reflects by restWa
   const dragFactor = Math.exp(-drag * dt);
   const r = CONFIG.piece.radius;
   const world = createWorld([{ x: 5, y: 7 - r - 0.001 }, { x: 1, y: 1 }, { x: 2, y: 1 }]);
-  world.wall = { x: 4, y: 7, orientation: 'horizontal' };
+  world.walls = [{ x: 4, y: 7, orientation: 'horizontal', owner: 'A' }];
   world.circles[0].vx = 3;
   world.circles[0].vy = 5;
   step(world);
@@ -759,7 +726,7 @@ check('physics: wall endpoint collision — reflects off a point normal (both ve
   const world = createWorld([
     { x: 4 + dx * (r + 0.001), y: 7 + dy * (r + 0.001) }, { x: 1, y: 1 }, { x: 9, y: 1 },
   ]);
-  world.wall = { x: 4, y: 7, orientation: 'horizontal' };
+  world.walls = [{ x: 4, y: 7, orientation: 'horizontal', owner: 'A' }];
   world.circles[0].vx = 2;
   world.circles[0].vy = 2;
   step(world);
@@ -771,12 +738,44 @@ check('physics: wall endpoint collision — reflects off a point normal (both ve
   assert.ok(Math.abs(distToEndpoint - r) < 1e-9, 'de-penetrated to exactly touching the endpoint');
 });
 
+check('physics: two walls coexisting both deflect circles in the same step, independently', () => {
+  const { drag, dt, restWall } = CONFIG.physics;
+  const dragFactor = Math.exp(-drag * dt);
+  const r = CONFIG.piece.radius;
+  // Two separate walls, far enough apart (>= CONFIG.wall.clearance) that
+  // neither's de-penetration can touch the other circle.
+  const world = createWorld([
+    { x: 5, y: 7 - r - 0.001 }, // circle 0 approaches wall A's flat side from above
+    { x: 5, y: 11 - r - 0.001 }, // circle 1 approaches wall B's flat side from above
+    { x: 9, y: 13 },
+  ]);
+  world.walls = [
+    { x: 4, y: 7, orientation: 'horizontal', owner: 'A' },
+    { x: 4, y: 11, orientation: 'horizontal', owner: 'B' },
+  ];
+  world.circles[0].vy = 5;
+  world.circles[1].vy = 5;
+  step(world);
+  const expectedVy = -(5 * dragFactor) * restWall;
+  assert.ok(Math.abs(world.circles[0].vy - expectedVy) < 1e-9, 'circle 0 correctly bounces off wall A');
+  assert.ok(Math.abs(world.circles[1].vy - expectedVy) < 1e-9, 'circle 1 correctly bounces off wall B, independently');
+});
+
+check('rules: walls survive a goal kick-off (resetWorld) but are cleared by resetMatch ("Play again")', () => {
+  const world = kickoffWorld();
+  const match = createMatchState();
+  placeWall(match, world, 'A', { x: 4, y: 7, orientation: 'horizontal' });
+  resetWorld(world, KICKOFF.B);
+  assert.equal(world.walls.length, 1, 'a normal kick-off (post-goal reset) does not touch walls');
+  resetMatch(match, world);
+  assert.equal(world.walls.length, 0, '"Play again" is a genuinely fresh match — walls clear too');
+});
+
 // --- Step 7: VOID mode (§5/§7) ---------------------------------------------
 // CONFIG.field.mode/CONFIG.modes.void.voidPenalty are plain mutable fields
-// (no test-mode override plumbing exists, matching how step 6's wall tests
-// mutate world.wall directly) — every check here sets what it needs and
-// restores 'arena'/'goal' before returning, so mode never leaks into a check
-// that runs after it.
+// (no test-mode override plumbing exists) — every check here sets what it
+// needs and restores 'arena'/'goal' before returning, so mode never leaks
+// into a check that runs after it.
 
 check('physics (VOID): a circle whose centre leaves via the side is flagged fallen, velocity frozen to zero', () => {
   CONFIG.field.mode = 'void';
@@ -853,7 +852,6 @@ check('rules (VOID): fall penalty "goal" — opponent scores, the faller concede
   assert.deepEqual(result, { type: 'goal', scorer: 'B', conceder: 'A', winner: null });
   assert.equal(match.score.B, 1);
   assert.equal(match.currentPlayer, 'A', 'the faller takes the next kick-off, not the scorer');
-  assert.equal(match.wallPlacer, 'A');
   for (let i = 0; i < world.circles.length; i++) {
     assert.equal(world.circles[i].x, KICKOFF.A[i].x, `circle ${i} reset to KICKOFF.A — the faller's own kickoff`);
     assert.equal(world.circles[i].y, KICKOFF.A[i].y);
@@ -872,7 +870,6 @@ check('rules (VOID): fall penalty "turnover" — no score change, only the falle
   assert.equal(result, null, 'turnover has no goal object to report');
   assert.deepEqual(match.score, { A: 0, B: 0 });
   assert.equal(match.currentPlayer, 'B', 'turn passes to the opponent');
-  assert.equal(match.wallPlacer, 'A');
   assert.equal(world.circles[0].fallen, false, 'respawned, no longer fallen');
   assert.ok(world.circles[0].x >= 0 && world.circles[0].x <= w && world.circles[0].y >= 0 && world.circles[0].y <= h, 'respawned inside the field');
   assert.deepEqual({ x: world.circles[1].x, y: world.circles[1].y }, before1, 'uninvolved circle untouched');
