@@ -11,7 +11,7 @@ import { normalize } from './js/vec.js';
 import { createWorld, step, launchCircle, restSnap, checkFalls, goalXRange, resetWorld } from './js/physics.js';
 import {
   KICKOFF, createMatchState, resetMatch, onLaunch, tick, forfeitTurn, tickMatchClock,
-  isWallLegal, placeWall, hasPlacedWall,
+  isWallLegal, placeWall, removeWall, KICKOFF_WALLS, initialWalls,
 } from './js/rules.js';
 
 const { w, h } = CONFIG.field;
@@ -673,13 +673,36 @@ check('rules: placeWall — rejected when it\'s not that player\'s turn', () => 
   assert.equal(world.walls.length, 0);
 });
 
-check('rules: placeWall — rejected once a player has already placed theirs, even at a different legal spot', () => {
+check('rules: placeWall — calling it again for the same player MOVES their wall, doesn\'t add a second one', () => {
   const world = kickoffWorld();
   const match = createMatchState();
   assert.equal(placeWall(match, world, 'A', { x: 4, y: 7, orientation: 'horizontal' }), true);
-  const secondAttempt = placeWall(match, world, 'A', { x: 4, y: 10, orientation: 'horizontal' });
-  assert.equal(secondAttempt, false);
-  assert.equal(world.walls.length, 1, 'still only the first one');
+  const moved = placeWall(match, world, 'A', { x: 4, y: 4, orientation: 'horizontal' });
+  assert.equal(moved, true);
+  assert.equal(world.walls.length, 1, 'still exactly one wall for A, replaced not appended');
+  assert.deepEqual(world.walls[0], { x: 4, y: 4, orientation: 'horizontal', owner: 'A' });
+});
+
+check('rules: placeWall — moving your own wall doesn\'t reject on clearance from where it already was', () => {
+  const world = kickoffWorld();
+  const match = createMatchState();
+  const wall = { x: 4, y: 7, orientation: 'horizontal' };
+  assert.equal(placeWall(match, world, 'A', wall), true);
+  // Same exact spot again — would fail a naive "too close to an existing
+  // wall" check if it didn't exclude the mover's own current wall first.
+  assert.equal(placeWall(match, world, 'A', wall), true);
+  assert.equal(world.walls.length, 1);
+});
+
+check('rules: removeWall — takes a player\'s wall off the field; a no-op if they have none or it isn\'t their turn', () => {
+  const world = kickoffWorld();
+  const match = createMatchState();
+  placeWall(match, world, 'A', { x: 4, y: 7, orientation: 'horizontal' });
+  assert.equal(removeWall(match, world, 'B'), false, 'not B\'s turn');
+  assert.equal(world.walls.length, 1, 'unaffected by the rejected call');
+  assert.equal(removeWall(match, world, 'A'), true);
+  assert.equal(world.walls.length, 0);
+  assert.equal(removeWall(match, world, 'A'), false, 'nothing left to remove');
 });
 
 check('rules: placeWall — allowed mid-turn while armed (a wall placed after a completed pass, to set up a bounce shot)', () => {
@@ -687,16 +710,6 @@ check('rules: placeWall — allowed mid-turn while armed (a wall placed after a 
   const match = createMatchState();
   match.armed = true; // simulates a pass already completed this turn — still Player A's turn
   assert.equal(placeWall(match, world, 'A', { x: 4, y: 7, orientation: 'horizontal' }), true);
-});
-
-check('rules: hasPlacedWall — tracks each player independently', () => {
-  const world = kickoffWorld();
-  const match = createMatchState();
-  assert.equal(hasPlacedWall(world, 'A'), false);
-  assert.equal(hasPlacedWall(world, 'B'), false);
-  placeWall(match, world, 'A', { x: 4, y: 7, orientation: 'horizontal' });
-  assert.equal(hasPlacedWall(world, 'A'), true);
-  assert.equal(hasPlacedWall(world, 'B'), false, 'B placing nothing is untouched by A placing theirs');
 });
 
 check('physics: wall flat-side collision — normal component reflects by restWall, tangential untouched', () => {
@@ -761,14 +774,26 @@ check('physics: two walls coexisting both deflect circles in the same step, inde
   assert.ok(Math.abs(world.circles[1].vy - expectedVy) < 1e-9, 'circle 1 correctly bounces off wall B, independently');
 });
 
-check('rules: walls survive a goal kick-off (resetWorld) but are cleared by resetMatch ("Play again")', () => {
+check('rules: a moved wall survives a goal kick-off (resetWorld), but resetMatch ("Play again") resets both walls to their defaults', () => {
   const world = kickoffWorld();
   const match = createMatchState();
-  placeWall(match, world, 'A', { x: 4, y: 7, orientation: 'horizontal' });
+  placeWall(match, world, 'A', { x: 4, y: 4, orientation: 'horizontal' }); // moved off the default
   resetWorld(world, KICKOFF.B);
   assert.equal(world.walls.length, 1, 'a normal kick-off (post-goal reset) does not touch walls');
+  assert.deepEqual(world.walls[0], { x: 4, y: 4, orientation: 'horizontal', owner: 'A' }, 'still at the moved-to spot, not reset');
   resetMatch(match, world);
-  assert.equal(world.walls.length, 0, '"Play again" is a genuinely fresh match — walls clear too');
+  assert.equal(world.walls.length, 2, '"Play again" is a genuinely fresh match — both starting walls are back');
+  assert.deepEqual(world.walls.find((w) => w.owner === 'A'), { ...KICKOFF_WALLS.A, owner: 'A' });
+  assert.deepEqual(world.walls.find((w) => w.owner === 'B'), { ...KICKOFF_WALLS.B, owner: 'B' });
+});
+
+check('rules: initialWalls — both starting positions are themselves legal, individually and together', () => {
+  const world = kickoffWorld();
+  const walls = initialWalls();
+  assert.equal(walls.length, 2);
+  assert.equal(isWallLegal(walls[0], createWorld(KICKOFF.A)), true, 'A\'s default position is legal on an empty field');
+  world.walls.push(walls[0]);
+  assert.equal(isWallLegal(walls[1], world), true, 'B\'s default position is legal with A\'s already placed');
 });
 
 // --- Step 7: VOID mode (§5/§7) ---------------------------------------------

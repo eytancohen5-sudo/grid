@@ -202,12 +202,12 @@ canvas {
 
 #wall-controls button {
   font-family: inherit;
-  font-size: 16px;
+  font-size: 14px; /* 4 buttons now (Cancel/Remove/Rotate/Confirm, §7's second redesign added Remove) — sized down from the original 3-button 16px so all four fit a 375px-wide phone without overflowing */
   color: #E2F6FF; /* CONFIG.colors.piece */
   background: rgba(5, 7, 10, 0.85);
   border: 2px solid #164E63; /* CONFIG.colors.fieldEdge */
   border-radius: 4px;
-  padding: 10px 20px;
+  padding: 10px 12px;
   cursor: pointer;
 }
 
@@ -218,6 +218,11 @@ canvas {
 #wall-confirm:disabled {
   opacity: 0.35;
   cursor: default;
+}
+
+#wall-remove {
+  border-color: #EF4444; /* CONFIG.colors.wallIllegal, reused as this game's one "be careful" red — takes your wall off the field entirely */
+  color: #EF4444;
 }
 
 /* Mode picker (§12 step 7): "a mode toggle before the match" — deliberately

@@ -26,6 +26,34 @@ export const KICKOFF = {
   B: [{ x: 3.5, y: 3.0 }, { x: 6.5, y: 3.0 }, { x: 5.0, y: 1.5 }],
 };
 
+/**
+ * §7 (redesigned again 2026-08-20, same day as the per-player-wall
+ * redesign): "why do we start with 0 walls... start with 1 wall for each
+ * side" — Eytan's live follow-up. Each player's wall now exists on the
+ * field from the very start of a match, at a legal default position in
+ * their own half, mirror-symmetric across the field centre the same way
+ * `KICKOFF` itself already is. Verified legal (individually and together)
+ * against the real `isWallLegal` before picking these numbers, not
+ * hand-derived. A player can still move or remove their own wall later
+ * (see `placeWall`/`removeWall`) — this only sets where each one starts.
+ */
+export const KICKOFF_WALLS = {
+  A: { x: 4, y: 8, orientation: 'horizontal' },
+  B: { x: 4, y: 6, orientation: 'horizontal' },
+};
+
+/** Fresh `world.walls` array for a brand new match — used at both initial
+ * page load and every "Play again", so the two can never drift apart into
+ * different starting states.
+ * @returns {import('./physics.js').Wall[]}
+ */
+export function initialWalls() {
+  return [
+    { ...KICKOFF_WALLS.A, owner: 'A' },
+    { ...KICKOFF_WALLS.B, owner: 'B' },
+  ];
+}
+
 /** @typedef {'A' | 'B'} Player */
 
 /**
@@ -193,7 +221,9 @@ export function resetMatch(match, world) {
   match.turnTimeLeft = CONFIG.timers.turnSeconds;
   match.matchTimeLeft = CONFIG.timers.matchSeconds;
   match.suddenDeath = false;
-  world.walls = []; // §7: permanent for the match, but "Play again" is a genuinely fresh match
+  // §7: a fresh match starts with both walls already on the field — "Play
+  // again" is a genuinely fresh match, not a continuation.
+  world.walls = initialWalls();
   resetWorld(world, KICKOFF.A);
 }
 
@@ -201,16 +231,19 @@ export function resetMatch(match, world) {
  * §7's legality conditions, checked only at placement (a wall stays legal
  * afterward even if circles later rest near it): entirely inside the field,
  * >= CONFIG.wall.clearance cells from each goal-mouth segment, from each
- * circle's centre, AND (redesigned 2026-08-20: two permanent walls can now
- * coexist) from the other player's wall, if it's been placed yet. Reuses
- * the same `clearance` value rather than adding a second tunable — must
- * stay above 2*piece.radius (0.8) for physics.js's sequential per-circle
- * wall resolution to never volley a circle between two walls that are too
- * close together; 2.0 clears that with comfortable margin.
+ * circle's centre, AND (redesigned 2026-08-20: two walls can now coexist)
+ * from the other player's wall — never from `excludeOwner`'s own current
+ * wall, so a player moving their own wall doesn't get rejected for being
+ * too close to where it already was. Reuses the same `clearance` value
+ * rather than adding a second tunable — must stay above 2*piece.radius
+ * (0.8) for physics.js's sequential per-circle wall resolution to never
+ * volley a circle between two walls that are too close together; 2.0
+ * clears that with comfortable margin.
  * @param {import('./physics.js').Wall} wall @param {import('./physics.js').World} world
+ * @param {Player} [excludeOwner]  when checking a move, the mover's own player id
  * @returns {boolean}
  */
-export function isWallLegal(wall, world) {
+export function isWallLegal(wall, world, excludeOwner) {
   const { w, h } = CONFIG.field;
   const { clearance } = CONFIG.wall;
   const { p1, p2 } = wallEndpoints(wall);
@@ -229,6 +262,7 @@ export function isWallLegal(wall, world) {
   }
 
   for (const other of world.walls) {
+    if (other.owner === excludeOwner) continue;
     const otherEnds = wallEndpoints(other);
     if (segmentSegmentDistance(p1, p2, otherEnds.p1, otherEnds.p2) < clearance) return false;
   }
@@ -236,31 +270,51 @@ export function isWallLegal(wall, world) {
   return true;
 }
 
-/** @param {import('./physics.js').World} world @param {Player} player @returns {boolean} */
-export function hasPlacedWall(world, player) {
-  return world.walls.some((w) => w.owner === player);
-}
-
 /**
- * Places `player`'s one permanent wall (§7, redesigned 2026-08-20: no more
- * turn-machine placement window — a player deploys their wall whenever they
- * choose, on their own turn). Re-validates every condition itself rather
- * than trusting the caller — input.js's UI already prevents confirming an
- * illegal position, but this is the actual gate, not that. No-op (returns
- * false) if called illegally: not this player's turn, they've already
- * placed theirs, or the wall itself doesn't check out. There is no "move"
- * or "skip" concept anymore — once placed, permanent; if never placed,
- * simply never placed, no penalty either way.
+ * Places or moves `player`'s wall (§7, redesigned 2026-08-20 twice in one
+ * day: first to one permanent wall per player, then to start each match
+ * with both already placed — "why do we start with 0 walls... start with
+ * 1 wall for each side"). Not a turn-machine window — a player repositions
+ * their own wall any time it's genuinely their turn to act. Re-validates
+ * every condition itself rather than trusting the caller — input.js's UI
+ * already prevents confirming an illegal position, but this is the actual
+ * gate, not that. No-op (returns false) if not this player's turn or the
+ * wall itself doesn't check out (excluding the player's own current wall
+ * from the clearance check — see `isWallLegal`, this is a move, not a
+ * second wall). If the player already has one, it's replaced in place
+ * rather than added as an extra entry.
  * @param {MatchState} match @param {import('./physics.js').World} world
  * @param {Player} player @param {import('./physics.js').Wall} wall
  * @returns {boolean} whether the placement was actually committed
  */
 export function placeWall(match, world, player, wall) {
   if (match.currentPlayer !== player) return false; // only on your own turn — same principle as aiming
-  if (hasPlacedWall(world, player)) return false;
-  if (!isWallLegal(wall, world)) return false;
+  if (!isWallLegal(wall, world, player)) return false;
 
-  world.walls.push({ x: wall.x, y: wall.y, orientation: wall.orientation, owner: player });
+  const existingIndex = world.walls.findIndex((w) => w.owner === player);
+  const placed = { x: wall.x, y: wall.y, orientation: wall.orientation, owner: player };
+  if (existingIndex === -1) {
+    world.walls.push(placed);
+  } else {
+    world.walls[existingIndex] = placed;
+  }
+  return true;
+}
+
+/**
+ * Takes `player`'s wall off the field entirely (§7: "or take it off for
+ * later") — they have no wall until they place a new one, on their own
+ * schedule, same as everyone starts before ever placing one. Same
+ * own-turn gate as `placeWall`. No-op (returns false) if they don't
+ * currently have a wall on the field, or it isn't their turn.
+ * @param {MatchState} match @param {import('./physics.js').World} world @param {Player} player
+ * @returns {boolean} whether a wall was actually removed
+ */
+export function removeWall(match, world, player) {
+  if (match.currentPlayer !== player) return false;
+  const index = world.walls.findIndex((w) => w.owner === player);
+  if (index === -1) return false;
+  world.walls.splice(index, 1);
   return true;
 }
 

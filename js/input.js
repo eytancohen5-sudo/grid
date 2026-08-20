@@ -40,7 +40,7 @@ import { isSettled, launchCircle } from './physics.js';
  * @returns {{
  *   getState: () => { selectedIndex: number|null, direction: {x:number,y:number}|null, pull: number, rejectedIndex: number|null },
  *   getWallState: () => { preview: import('./physics.js').Wall | null, placingFor: import('./rules.js').Player | null },
- *   beginWallPlacement: (player: import('./rules.js').Player) => void,
+ *   beginWallPlacement: (player: import('./rules.js').Player, currentWall: import('./physics.js').Wall | null) => void,
  *   cancelWallPlacement: () => void,
  *   rotateWall: () => void,
  * }}
@@ -120,17 +120,22 @@ export function attachInput(canvas, world, match, getTransform, onLaunch, isInpu
     return { x: Math.max(0, Math.min(w, x)), y: Math.max(0, Math.min(h - wallLength, y)), orientation };
   }
 
-  /** Enters placement mode for `player` — always a brand-new wall (§7
-   * redesign: permanent once placed, never moved), seeded at a sensible
-   * default so something legible is visible before the player's first
-   * touch, not just after. Caller (main.js) is responsible for only
-   * offering this when it's actually legal to call (that player's own
-   * turn, they haven't placed yet) — `placeWall` re-validates regardless.
+  /** Enters placement mode for `player` — seeded from their CURRENT wall
+   * (every player has one from kickoff onward, §7's second redesign) so
+   * the drag starts from where it already is, matching "move," not "place
+   * from scratch." Caller (main.js) is responsible for only offering this
+   * when it's actually legal to call (that player's own turn) —
+   * `placeWall`/`removeWall` re-validate regardless.
    * @param {import('./rules.js').Player} player
+   * @param {import('./physics.js').Wall | null} currentWall  that player's
+   *   existing wall, or null in the (no longer normal, but not assumed
+   *   impossible) case they don't have one — falls back to the old default.
    */
-  function beginWallPlacement(player) {
+  function beginWallPlacement(player, currentWall) {
     placingFor = player;
-    wallPreview = snapWallPosition({ x: CONFIG.field.w / 2, y: CONFIG.field.h / 2 }, 'horizontal');
+    wallPreview = currentWall
+      ? { x: currentWall.x, y: currentWall.y, orientation: currentWall.orientation }
+      : snapWallPosition({ x: CONFIG.field.w / 2, y: CONFIG.field.h / 2 }, 'horizontal');
   }
 
   /** Exits placement mode without committing anything — no cost, since

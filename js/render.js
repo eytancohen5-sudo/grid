@@ -580,15 +580,21 @@ function wallOwnerColor(owner) {
  * §7: "legal positions are shown as a dimmed overlay of allowed grid
  * lines" — every candidate `orientation` placement that would currently
  * pass `isWallLegal`, drawn as one batched dim stroke in the placing
- * player's own colour. Only ~135-145 candidates per orientation on this
- * field size; cheap enough to recompute every frame rather than cache.
+ * player's own colour. `player` excludes that player's own current wall
+ * from the legality check (§7's second redesign: placement is now always a
+ * MOVE, since every player already has a wall from kickoff onward — without
+ * this, the overlay would incorrectly dim out the player's own existing
+ * position as if it conflicted with itself). Only ~135-145 candidates per
+ * orientation on this field size; cheap enough to recompute every frame
+ * rather than cache.
  * @param {CanvasRenderingContext2D} ctx
  * @param {{scale: number, offsetX: number, offsetY: number}} transform
  * @param {'horizontal' | 'vertical'} orientation
  * @param {import('./physics.js').World} world
  * @param {string} color
+ * @param {'A' | 'B'} player
  */
-export function drawWallLegalOverlay(ctx, transform, orientation, world, color) {
+export function drawWallLegalOverlay(ctx, transform, orientation, world, color, player) {
   const { scale, offsetX, offsetY } = transform;
   const { w, h } = CONFIG.field;
   const { length } = CONFIG.wall;
@@ -601,7 +607,7 @@ export function drawWallLegalOverlay(ctx, transform, orientation, world, color) 
   if (orientation === 'horizontal') {
     for (let y = 0; y <= h; y++) {
       for (let x = 0; x <= w - length; x++) {
-        if (!isWallLegal({ x, y, orientation }, world)) continue;
+        if (!isWallLegal({ x, y, orientation }, world, player)) continue;
         const px = offsetX + x * scale;
         const py = offsetY + y * scale;
         ctx.moveTo(px, py);
@@ -611,7 +617,7 @@ export function drawWallLegalOverlay(ctx, transform, orientation, world, color) 
   } else {
     for (let x = 0; x <= w; x++) {
       for (let y = 0; y <= h - length; y++) {
-        if (!isWallLegal({ x, y, orientation }, world)) continue;
+        if (!isWallLegal({ x, y, orientation }, world, player)) continue;
         const px = offsetX + x * scale;
         const py = offsetY + y * scale;
         ctx.moveTo(px, py);
@@ -668,9 +674,16 @@ export function drawFrame(
   drawGoals(ctx, transform, armedGoal);
   drawGoalFlash(ctx, transform, goalFlash);
 
-  for (const wall of world.walls) drawWall(ctx, transform, wall, wallOwnerColor(wall.owner));
+  // While a player is actively repositioning their own wall, its old (still
+  // committed) entry in world.walls is excluded here — the live preview
+  // below already represents it; drawing both would show two overlapping
+  // lines for what is, from the player's perspective, the same one wall.
+  for (const wall of world.walls) {
+    if (placing && wall.owner === wallState.placingFor) continue;
+    drawWall(ctx, transform, wall, wallOwnerColor(wall.owner));
+  }
   if (placing) {
-    drawWallLegalOverlay(ctx, transform, wallState.preview.orientation, world, wallOwnerColor(wallState.placingFor));
+    drawWallLegalOverlay(ctx, transform, wallState.preview.orientation, world, wallOwnerColor(wallState.placingFor), wallState.placingFor);
   }
 
   drawPassLine(ctx, transform, circles, inputState.selectedIndex, passFlashProgress);
@@ -682,7 +695,7 @@ export function drawFrame(
   drawArmedBadge(ctx, transform, match);
 
   if (placing) {
-    const legal = isWallLegal(wallState.preview, world);
+    const legal = isWallLegal(wallState.preview, world, wallState.placingFor);
     drawWall(ctx, transform, wallState.preview, legal ? wallOwnerColor(wallState.placingFor) : CONFIG.colors.wallIllegal);
   }
 }

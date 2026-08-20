@@ -12,7 +12,7 @@ import { attachInput } from './input.js';
 import {
   createMatchState, resetMatch, KICKOFF, onLaunch,
   tick as rulesTick, forfeitTurn, tickMatchClock,
-  isWallLegal, placeWall, hasPlacedWall,
+  isWallLegal, placeWall, removeWall, initialWalls,
 } from './rules.js';
 import { lerp } from './vec.js';
 import { CONFIG } from './config.js';
@@ -45,10 +45,12 @@ if (!(winOverlay instanceof HTMLElement) || !(winMessage instanceof HTMLElement)
 
 const wallControls = document.getElementById('wall-controls');
 const wallCancelButton = document.getElementById('wall-cancel');
+const wallRemoveButton = document.getElementById('wall-remove');
 const wallRotateButton = document.getElementById('wall-rotate');
 const wallConfirmButton = document.getElementById('wall-confirm');
 if (
   !(wallControls instanceof HTMLElement) || !(wallCancelButton instanceof HTMLElement) ||
+  !(wallRemoveButton instanceof HTMLElement) ||
   !(wallRotateButton instanceof HTMLElement) || !(wallConfirmButton instanceof HTMLButtonElement)
 ) {
   throw new Error('missing #wall-controls elements');
@@ -65,6 +67,7 @@ if (!(modePicker instanceof HTMLElement) || !(modeArenaButton instanceof HTMLEle
 // own comment) — the same table rules.js's post-goal reset reuses, so
 // there is exactly one source of truth for kick-off coordinates.
 const world = createWorld(KICKOFF.A);
+world.walls = initialWalls(); // §7: both players' walls exist from the very start, same as resetMatch gives every later match
 const match = createMatchState();
 
 let ctx = setupContext(canvas, canvas.clientWidth, canvas.clientHeight);
@@ -212,16 +215,18 @@ const input = attachInput(
   () => popupUntil !== null || match.winner !== null || !modeChosen
 );
 
-/** §7 (redesigned 2026-08-20): a player enters placement mode for their OWN
- * permanent wall by tapping their side's button — no more automatic
- * post-turn window. Available any time it's genuinely their turn (including
- * mid-turn while armed, so a wall can set up a bounce shot, not just defend
- * — this is what "each player manages their own wall" plus "a wall to
- * bounce from" actually required; `enterPlacement`'s own enabled-state
- * check in `updateWallControls` is what actually gates *when* the button
- * can be pressed). */
+/** §7 (redesigned 2026-08-20, twice in one day): a player enters placement
+ * mode for their OWN wall by tapping their side's button — no automatic
+ * turn-machine window. Available any time it's genuinely their turn
+ * (including mid-turn while armed, so a wall can set up a bounce shot, not
+ * just defend). Every player has a wall on the field from kickoff onward
+ * (`initialWalls`), so this is always a MOVE, seeded from wherever their
+ * wall currently sits — `enterPlacement`'s own enabled-state check in
+ * `updateWallControls` is what actually gates *when* the button can be
+ * pressed. */
 function enterPlacement(player) {
-  input.beginWallPlacement(player);
+  const currentWall = world.walls.find((w) => w.owner === player) ?? null;
+  input.beginWallPlacement(player, currentWall);
   wallControls.classList.add('visible');
 }
 wallButtonA.addEventListener('click', () => enterPlacement('A'));
@@ -232,37 +237,44 @@ wallCancelButton.addEventListener('click', () => {
   input.cancelWallPlacement();
   wallControls.classList.remove('visible');
 });
+wallRemoveButton.addEventListener('click', () => {
+  const { placingFor } = input.getWallState();
+  if (placingFor && removeWall(match, world, placingFor)) {
+    input.cancelWallPlacement();
+    wallControls.classList.remove('visible');
+  }
+});
 wallConfirmButton.addEventListener('click', () => {
   const { preview, placingFor } = input.getWallState();
   if (preview && placingFor && placeWall(match, world, placingFor, preview)) {
-    input.cancelWallPlacement(); // exits placement mode — the wall is now permanent, nothing left to drag
+    input.cancelWallPlacement(); // exits placement mode — committed, nothing left to drag
     wallControls.classList.remove('visible');
   }
 });
 
 /**
- * Keeps the wall-placement controls bar and each side's "Create Wall"
- * button in sync every frame. The controls bar tracks input.js's own
- * placement-mode state directly (no separate main.js flag to drift out of
- * sync with it). Each button is enabled only when it's genuinely legal to
- * START placing right now: that player's own turn (including mid-turn
- * while armed — §7's offensive use case), the field settled with no flick
- * in flight (can't sensibly drop a wall while circles are still moving),
- * the match not over, a mode chosen, no popup covering the field, nobody
- * already mid-placement (including yourself, until you cancel/confirm),
- * and — permanent walls — not already placed.
+ * Keeps the wall-placement controls bar and each side's "Wall" button in
+ * sync every frame. The controls bar tracks input.js's own placement-mode
+ * state directly (no separate main.js flag to drift out of sync with it).
+ * Each button is enabled only when it's genuinely legal to START moving
+ * that wall right now: that player's own turn (including mid-turn while
+ * armed — §7's offensive use case), the field settled with no flick in
+ * flight (can't sensibly drag a wall while circles are still moving), the
+ * match not over, a mode chosen, no popup covering the field, and nobody
+ * already mid-placement (including yourself, until you cancel/confirm).
+ * No "already placed" check any more — every player always has a wall to
+ * move (or remove) from kickoff onward.
  */
 function updateWallControls() {
   const { placingFor, preview } = input.getWallState();
   wallControls.classList.toggle('visible', placingFor !== null);
   if (placingFor !== null) {
-    wallConfirmButton.disabled = !preview || !isWallLegal(preview, world);
+    wallConfirmButton.disabled = !preview || !isWallLegal(preview, world, placingFor);
   }
 
   const canStartPlacing = (player) =>
     placingFor === null && modeChosen && popupUntil === null && match.winner === null &&
-    match.currentPlayer === player && match.launchedIndex === null && isSettled(world) &&
-    !hasPlacedWall(world, player);
+    match.currentPlayer === player && match.launchedIndex === null && isSettled(world);
   wallButtonA.disabled = !canStartPlacing('A');
   wallButtonB.disabled = !canStartPlacing('B');
 }
