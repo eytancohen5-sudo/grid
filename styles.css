@@ -94,14 +94,31 @@ canvas {
    not competing with the score for attention — until it's actually
    pressable, where full opacity/pointer cursor cues "this does something
    right now." Disabled (not your turn, or already placed) reads as inert
-   text, same visual weight the old wall-uses number had. */
+   text, same visual weight the old wall-uses number had.
+
+   pointer-events: auto is load-bearing, not decorative — #hud is
+   pointer-events: none (deliberately, so the score/clock text never blocks
+   a drag on the canvas underneath), and that value INHERITS to children by
+   default. This is the actual button that got added into the HUD after
+   that rule already existed — without this override it's untappable on a
+   real device (bug found live, 2026-08-20: Eytan couldn't place a wall on
+   either side; verifying with a JS .click() call earlier had silently
+   masked this, since that bypasses pointer-events/hit-testing entirely —
+   next time, check computed pointer-events on any new interactive element
+   added inside an existing pointer-events:none container, don't just
+   click-test it). Small negative margin compensates for the added padding
+   so it doesn't visibly widen the HUD row's rhythm; padding itself exists
+   to keep the tap target closer to a real touch-target size, not just the
+   bare glyph bounds of "Wall" at 0.6em. */
 .wall-button {
   font-family: inherit;
   font-size: 0.6em;
   opacity: 0.55;
   background: transparent;
   border: none;
-  padding: 0;
+  padding: 10px 8px;
+  margin: -10px -8px;
+  pointer-events: auto;
   cursor: default;
 }
 .wall-button:not(:disabled) {
