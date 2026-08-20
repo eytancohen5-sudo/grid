@@ -373,12 +373,16 @@ automatically after a turn ends. Full redesign, not a patch:
   place. If this is still visible after the redeploy below, it likely means whichever URL
   is being tested was serving an older cached copy, not a code bug — worth a hard refresh
   first.
-- **Deploy note**: this redesign is being pushed to the GitHub Pages copy
-  (eytancohen5-sudo.github.io/grid) as part of this same session. It has NOT yet been
-  copied into `10seconds.com/grid` (a separate, parallel session's deploy target, copied
-  files rather than a live pull from this repo — see project memory) — that copy step
-  touches a different project's directory outside Akh Sheli, and I didn't want to act on
-  another session's territory without confirming first.
+- **Deploy note**: pushed to both live copies — GitHub Pages
+  (eytancohen5-sudo.github.io/grid) and, on Eytan's explicit go-ahead, 10seconds.com/grid
+  (a separate, parallel session's deploy target — a file copy, not a live pull from this
+  repo, see project memory). The 10seconds.com sync briefly, accidentally published that
+  site's internal `DEPLOY.md` publicly (used `git archive HEAD` to build the deploy tree
+  to avoid a different parallel session's uncommitted edits elsewhere in that repo, which
+  grabbed the whole committed tree instead of the specific file list that repo's own
+  deploy recipe calls for) — caught by that repo's own documented leak-check immediately
+  after, fixed with a corrected redeploy within the same exchange, confirmed closed.
+  Lesson written up in that project's own memory for next time, not just fixed silently.
 
 ## Full build — all 8 steps complete, 67/67 tests passing
 
