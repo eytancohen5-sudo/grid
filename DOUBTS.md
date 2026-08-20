@@ -367,6 +367,28 @@ automatically after a turn ends. Full redesign, not a patch:
   browser tool suspends unless the tab is actively "visible" to it (same limitation as
   every rAF-dependent thing all session) — should behave normally on a real, actively-
   viewed phone screen, but genuinely wasn't provable here.
+- **A real bug shipped anyway, and it's exactly the gap the note above should have warned
+  me about — flagging the methodology mistake, not just the fix.** After the redesign
+  deployed, Eytan reported neither player could place a wall on either side. The wall
+  buttons live inside `#hud`, which is deliberately `pointer-events: none` (so the score/
+  clock text never blocks a drag on the canvas underneath) — a rule from step 4, long
+  before these buttons existed. `pointer-events: none` inherits to children by default, so
+  the buttons silently inherited it too: correctly wired, correctly enabled, and completely
+  untappable by any real click or touch. My earlier "live-tested the actual click flow"
+  claim above was true but insufficient — it used `element.click()`, which invokes a
+  button's handler directly and bypasses pointer-events/hit-testing entirely, so it could
+  never have caught this. Found it by checking `getComputedStyle(...).pointerEvents`
+  directly (`"none"`) and confirming with the browser's own `document.elementFromPoint()` —
+  a tap at the button's centre wasn't hitting the button at all. Fixed with a scoped
+  `pointer-events: auto` override, and re-verified the same way (computed style now
+  `"auto"`, `elementFromPoint` now resolves to the actual button) plus a full place →
+  confirm cycle via real dispatched pointer/click events at the button's exact rendered
+  coordinates — not just calling the handler. Also widened the tap target while fixing it
+  (was 29×14px, real touch-target guidance wants closer to 44×44). Lesson for next time:
+  `.click()` proves the handler is wired correctly; it does not prove a real tap can ever
+  reach the element. Any new interactive element added inside an existing container needs
+  its own inherited-CSS check (pointer-events, but also visibility/display/z-index),
+  independent of whether the click handler itself is correct.
 - **Also checked (unrelated) — "no limit on how far I can pull"**: re-verified the pull-
   distance/speed cap directly against the current code (6 cells → identical speed no
   matter how much further you pull, tested up to 50 cells) — the cap is correctly in
