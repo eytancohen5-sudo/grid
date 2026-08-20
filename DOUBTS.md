@@ -406,6 +406,59 @@ automatically after a turn ends. Full redesign, not a patch:
   after, fixed with a corrected redeploy within the same exchange, confirmed closed.
   Lesson written up in that project's own memory for next time, not just fixed silently.
 
+## Post-build: walls start pre-placed, move/remove instead of place-once (2026-08-20, same day, third wall iteration) — 67/67 tests passing
+
+Eytan, right after the pointer-events fix went live: "why do we start with 0 walls. At the
+contrary start with 1 wall for each side." Asked one clarifying question before touching
+code, since his own two messages this session had already contradicted each other once on
+this exact feature (movable vs. permanent) — confirmed: **auto-placed at kickoff, but still
+movable, or removable to save the placement for later.** This is a real, if narrow,
+walk-back of the "permanent, one-shot" ruling from a few messages earlier — noting that
+explicitly rather than pretending it was the plan all along.
+
+- **What changed**: `KICKOFF_WALLS` gives each player a default position (mirror-symmetric
+  across the field centre, both individually and jointly verified legal via the real
+  `isWallLegal` before picking the numbers, not hand-derived) — seeded into `world.walls`
+  both at the very first page load and on every "Play again." `placeWall(match, world,
+  player, wall)` no longer rejects a player who already has a wall — it replaces it in
+  place, i.e. moves it. New `removeWall(match, world, player)` takes a player's wall off
+  the field entirely (nothing left to move) so they can place a fresh one later on their
+  own schedule. `hasPlacedWall` deleted — dead code once "already placed" stopped being a
+  gate on anything. The "Wall" HUD button is now always enabled/disabled purely by whether
+  it's currently legal to reposition (your own turn, settled, nothing already in flight),
+  never by whether you've "used" your placement, since there's no such thing to use up
+  anymore.
+- **Two real bugs found live while re-verifying, both fixed before shipping**:
+  1. `render.js` had its OWN two `isWallLegal` calls (the legal-position overlay, and the
+     live preview's legal/illegal colour) that never got the `excludeOwner` parameter I'd
+     added to `isWallLegal` itself — only the confirm-button's disabled check in main.js
+     did. Since every player now always has an existing wall, reopening it to move it
+     immediately showed the preview as illegal/red at the exact position it was already
+     legally sitting at (too close to "itself," since nothing excluded it from its own
+     clearance check). Two call sites, found by reading the code after noticing the red
+     preview live, not by a test (headless tests exercise `isWallLegal` directly with
+     explicit arguments, so they'd never catch a caller forgetting to pass one).
+  2. The 4th button (`Remove`, added for this change) made `#wall-controls` overflow a
+     375px-wide phone screen — visibly cut off on both ends in a real screenshot. Fixed by
+     sizing the button padding/font down for a 4-button row; re-verified by screenshot,
+     not just by the CSS value looking reasonable.
+  3. A third thing investigated and ruled NOT a bug: two buttons briefly looked stuck
+     disabled during live testing even when the match state should have allowed them.
+     Traced to this environment's already-documented rAF suspension (0 `requestAnimationFrame`
+     calls measured over 800ms while investigating) — the disabled attribute only refreshes
+     inside the render loop, so with that loop not running, it was showing a frozen snapshot
+     from whenever a frame last actually fired, not a live bug. On a real phone with the
+     screen actually being looked at, rAF runs continuously and this doesn't arise. Confirmed
+     the underlying action still works correctly regardless (a full Confirm-flow cycle via
+     real dispatched pointer/click events succeeded, and that click handler never depends on
+     rAF at all — it reads and writes state directly).
+- **Not independently re-verified live**: the Remove button's own full cycle (enter
+  placement → tap Remove → wall gone) specifically — blocked by the same rAF staleness
+  while trying to get a clean run. Its wiring is structurally identical to Confirm's (same
+  event pattern, same direct rules.js call, same UI teardown), and `removeWall` itself has
+  dedicated headless coverage, so confidence is high, but this specific click path wasn't
+  proven end-to-end the way Confirm's was. Worth a real tap on your end.
+
 ## Full build — all 8 steps complete, 67/67 tests passing
 
 Every numbered step in §12 is now built: field, launch, rules, goals, timers, wall,
