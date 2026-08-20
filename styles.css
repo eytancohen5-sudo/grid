@@ -1,0 +1,229 @@
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  /* Must match CONFIG.colors.bg (js/config.js). CSS can't import config.js,
+     so this one value is necessarily duplicated — keep both in sync if the
+     background is ever retuned. Avoids a white flash before first paint. */
+  background: #05070A;
+}
+
+body {
+  height: 100dvh;
+  box-sizing: border-box;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Goal popup (step 3) — a screen overlay, not a canvas draw: plain DOM/CSS
+   sidesteps canvas text's DPI-crispness problem and hard rule 2 doesn't
+   even apply here (that rule governs canvas-pixel operations; this never
+   touches ctx). Font-family/sizes/colors mirror CONFIG.font/goalPopup/
+   colors — CSS can't import config.js, same unavoidable duplication as
+   the body background above. No fades: everything else in this game is an
+   instant show/hide, this stays consistent with that. */
+#goal-popup {
+  display: none;
+  position: fixed;
+  inset: 0;
+  align-items: center;
+  justify-content: center;
+  background: rgba(5, 7, 10, 0.6); /* CONFIG.colors.bg at CONFIG.goalPopup.scrimAlpha */
+  font-family: ui-monospace, 'SF Mono', 'Consolas', monospace; /* CONFIG.font */
+  font-size: 56px; /* CONFIG.goalPopup.fontSize */
+  text-shadow: 0 0 24px currentColor; /* glow, matches the canvas shadowBlur look */
+  pointer-events: none; /* auto-dismiss only, no tap-to-dismiss — never blocks a real drag underneath once dismissed */
+}
+
+#goal-popup.visible {
+  display: flex;
+}
+
+/* HUD score bar (step 4) — §10: "one thin bar, top of screen, outside the
+   field." render.js's computeScale now reserves CONFIG.hud.height px for
+   this (must match — same CSS/config.js duplication as everything else
+   here), so this never overlaps the grid. B on the left, A on the right,
+   matching §10's stated HUD token order; wall-uses/match-clock join this
+   bar later (steps 5/6), not built yet. */
+#hud {
+  position: fixed;
+  top: env(safe-area-inset-top);
+  left: env(safe-area-inset-left);
+  right: env(safe-area-inset-right);
+  height: 40px; /* CONFIG.hud.height */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  box-sizing: border-box;
+  font-family: ui-monospace, 'SF Mono', 'Consolas', monospace; /* CONFIG.font */
+  font-size: 20px; /* CONFIG.hud.fontSize */
+  pointer-events: none;
+}
+
+.hud-group {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+#score-b {
+  color: #F59E0B; /* CONFIG.colors.playerB */
+  text-shadow: 0 0 8px currentColor;
+}
+
+#score-a {
+  color: #22D3EE; /* CONFIG.colors.playerA */
+  text-shadow: 0 0 8px currentColor;
+}
+
+/* §10 HUD order: "[B score]·[wall uses B]·[match clock]·[wall uses A]·[A score]".
+   Same colour as the adjacent score, dimmer/smaller — a secondary reading,
+   not competing with the score for attention. */
+.wall-uses {
+  font-size: 0.6em;
+  opacity: 0.55;
+}
+#wall-uses-b { color: #F59E0B; }
+#wall-uses-a { color: #22D3EE; }
+
+/* §8b: "shown in the HUD, centred, small. It turns amber under 60 seconds." */
+#match-clock {
+  color: #E2F6FF; /* CONFIG.colors.piece */
+  font-size: 0.8em;
+}
+
+#match-clock.low {
+  color: #F59E0B; /* CONFIG.colors.playerB, reused as "amber" — no separate amber token exists */
+  text-shadow: 0 0 8px currentColor;
+}
+
+/* Win overlay (step 4, §9): "a full-screen overlay with the score, how it
+   was won, and a single Play again action." Unlike the goal popup, this
+   is persistent (no auto-dismiss) and interactive — pointer-events stay
+   enabled so the button is clickable. */
+#win-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 32px;
+  background: rgba(5, 7, 10, 0.85);
+  font-family: ui-monospace, 'SF Mono', 'Consolas', monospace; /* CONFIG.font */
+}
+
+#win-overlay.visible {
+  display: flex;
+}
+
+#win-message {
+  margin: 0;
+  font-size: 40px;
+  text-shadow: 0 0 24px currentColor;
+  text-align: center;
+}
+
+#play-again {
+  font-family: inherit;
+  font-size: 18px;
+  color: #E2F6FF; /* CONFIG.colors.piece */
+  background: transparent;
+  border: 2px solid #164E63; /* CONFIG.colors.fieldEdge */
+  border-radius: 4px;
+  padding: 12px 32px;
+  cursor: pointer;
+}
+
+/* Wall placement controls (§7): "tap a rotate control... confirm button
+   commits and spends the use... skipping is always allowed." A plain DOM
+   bar (same reasoning as the goal popup/HUD — these are discrete tap
+   targets, not part of the simulated field) fixed above the safe-area
+   bottom inset so it's always reachable one-handed. */
+#wall-controls {
+  display: none;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(env(safe-area-inset-bottom) + 16px);
+  justify-content: center;
+  gap: 12px;
+  font-family: ui-monospace, 'SF Mono', 'Consolas', monospace; /* CONFIG.font */
+}
+
+#wall-controls.visible {
+  display: flex;
+}
+
+#wall-controls button {
+  font-family: inherit;
+  font-size: 16px;
+  color: #E2F6FF; /* CONFIG.colors.piece */
+  background: rgba(5, 7, 10, 0.85);
+  border: 2px solid #164E63; /* CONFIG.colors.fieldEdge */
+  border-radius: 4px;
+  padding: 10px 20px;
+  cursor: pointer;
+}
+
+#wall-confirm {
+  border-color: #F8FAFC; /* CONFIG.colors.wall — the primary/affirmative action */
+}
+
+#wall-confirm:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Mode picker (§12 step 7): "a mode toggle before the match" — deliberately
+   minimal (one binary choice, shown once before play starts, not revisited
+   mid-match) so it reads as a pre-match pick rather than the settings
+   screen §0 rules out of v1. Reuses the goal-popup's full-scrim pattern. */
+#mode-picker {
+  display: flex;
+  position: fixed;
+  inset: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  background: rgba(5, 7, 10, 0.9);
+  font-family: ui-monospace, 'SF Mono', 'Consolas', monospace; /* CONFIG.font */
+  color: #E2F6FF; /* CONFIG.colors.piece */
+}
+
+#mode-picker.hidden {
+  display: none;
+}
+
+#mode-picker p {
+  margin: 0;
+  font-size: 20px;
+}
+
+.mode-picker-options {
+  display: flex;
+  gap: 16px;
+}
+
+#mode-picker button {
+  font-family: inherit;
+  font-size: 16px;
+  color: #E2F6FF; /* CONFIG.colors.piece */
+  background: transparent;
+  border: 2px solid #164E63; /* CONFIG.colors.fieldEdge */
+  border-radius: 4px;
+  padding: 14px 28px;
+  cursor: pointer;
+}

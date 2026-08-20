@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no, maximum-scale=1" />
+  <title>GRID</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="hud">
+    <span class="hud-group"><span id="score-b">0</span><span id="wall-uses-b" class="wall-uses">5</span></span>
+    <span id="match-clock">5:00</span>
+    <span class="hud-group"><span id="wall-uses-a" class="wall-uses">5</span><span id="score-a">0</span></span>
+  </div>
+  <div id="goal-popup"></div>
+  <div id="win-overlay">
+    <p id="win-message"></p>
+    <button id="play-again" type="button">Play again</button>
+  </div>
+  <div id="wall-controls">
+    <button id="wall-skip" type="button">Skip</button>
+    <button id="wall-rotate" type="button">Rotate</button>
+    <button id="wall-confirm" type="button">Confirm</button>
+  </div>
+  <div id="mode-picker">
+    <p>Choose a field</p>
+    <div class="mode-picker-options">
+      <button id="mode-arena" type="button">ARENA</button>
+      <button id="mode-void" type="button">VOID</button>
+    </div>
+  </div>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
