@@ -213,36 +213,84 @@ export function drawGoals(ctx, transform, armedGoal = null) {
 }
 
 /**
+ * Item 3 (2026-08-23 polish pass): a small inward chevron at the acting
+ * player's actual ATTACK target — the goal they're trying to score into,
+ * not the one they defend — shown from turn start, independent of
+ * `armed` (unlike `drawGoals`' own `armedGoal` glow-boost param, which
+ * stays armed-only; this is a separate, always-on cue). Non-hue per §10's
+ * own rule for this kind of state marker: a filled `pieceActive` (white)
+ * triangle, tip pointing into the field, base sitting on the goal line.
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {{scale: number, offsetX: number, offsetY: number}} transform
+ * @param {'top' | 'bottom'} targetGoal  the acting player's attack goal —
+ *   Player A attacks 'top' (B's own end), Player B attacks 'bottom' (A's
+ *   own end), same mapping `drawFrame` already uses for `armedGoal`.
+ */
+export function drawGoalChevron(ctx, transform, targetGoal) {
+  const { scale, offsetX, offsetY } = transform;
+  const { w, h } = CONFIG.field;
+  const { size, glow } = CONFIG.goalChevron;
+  const centerX = offsetX + (w / 2) * scale;
+  const lineY = targetGoal === 'top' ? offsetY : offsetY + h * scale;
+  const dir = targetGoal === 'top' ? 1 : -1; // inward: +y past the top line, -y past the bottom line
+  const tipY = lineY + dir * size;
+
+  ctx.save();
+  ctx.fillStyle = CONFIG.colors.pieceActive;
+  ctx.shadowColor = CONFIG.colors.pieceActive;
+  ctx.shadowBlur = glow;
+  ctx.beginPath();
+  ctx.moveTo(centerX, tipY);
+  ctx.lineTo(centerX - size * 0.6, lineY);
+  ctx.lineTo(centerX + size * 0.6, lineY);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+/**
  * The ARMED status badge (§10: "essential... the only readout of the single
  * most confusing piece of state in the game"). Text only, no background
  * plate — glow against CONFIG.colors.bg is contrast enough. Positioned just
- * outside the field edge on the acting player's side. First rendered text
- * in this game; font/size/glow are flat CSS px (same category as
- * BORDER_WIDTH — pixel-space, not cell-scaled).
+ * outside the turn-identity rail (item 1) on the acting player's side, so
+ * the two never overlap. First rendered text in this game; font/size/glow
+ * are flat CSS px (same category as BORDER_WIDTH — pixel-space, not
+ * cell-scaled).
+ *
+ * Two-state readout (2026-08-23 polish pass): this used to return early on
+ * `!match.armed`, i.e. render nothing at all until armed — a player with no
+ * prior context had nothing telling them ARMED was even a state that could
+ * exist. Now always renders (match not over), reading "PASS TO ARM" before
+ * armed and "ARMED" once armed, dimmed pre-arm so the armed state still
+ * reads as the more emphatic one.
  * @param {CanvasRenderingContext2D} ctx
  * @param {{scale: number, offsetX: number, offsetY: number}} transform
  * @param {import('./rules.js').MatchState} match
  */
 export function drawArmedBadge(ctx, transform, match) {
-  if (!match.armed) return;
+  if (match.winner !== null) return;
   const { scale, offsetX, offsetY } = transform;
   const { w, h } = CONFIG.field;
   const color = match.currentPlayer === 'A' ? CONFIG.colors.playerA : CONFIG.colors.playerB;
   const centerX = offsetX + (w / 2) * scale;
-  const gap = 6; // px, between the field edge and the badge text
+  const { barThickness } = CONFIG.turnTimer;
+  const { thickness: railThickness, gap } = CONFIG.turnRail;
+  const marginOut = barThickness + gap + railThickness + gap; // past the drain bar, the rail, and one more gap
+  const label = match.armed ? 'ARMED' : 'PASS TO ARM';
 
   ctx.save();
   ctx.fillStyle = color;
   ctx.shadowColor = color;
   ctx.shadowBlur = CONFIG.armedIndicator.glow;
+  ctx.globalAlpha = match.armed ? 1 : 0.6; // dimmer while waiting, full brightness once actually armed
   ctx.font = `${CONFIG.armedIndicator.fontSize}px ${CONFIG.font}`;
   ctx.textAlign = 'center';
   if (match.currentPlayer === 'A') {
     ctx.textBaseline = 'top';
-    ctx.fillText('ARMED', centerX, offsetY + h * scale + gap);
+    ctx.fillText(label, centerX, offsetY + h * scale + marginOut);
   } else {
     ctx.textBaseline = 'bottom';
-    ctx.fillText('ARMED', centerX, offsetY - gap);
+    ctx.fillText(label, centerX, offsetY - marginOut);
   }
   ctx.restore();
 }
@@ -250,37 +298,55 @@ export function drawArmedBadge(ctx, transform, match) {
 /**
  * The live line between the two non-selected circles' current centres (§6,
  * used by the pass-detection rule from step 3 on; purely visual here).
- * Only drawn while a drag is active — with no selection there's nothing to
- * distinguish "the other two" from. Deliberately no glow outside a flash
- * (preserves visual contrast for the completed-pass flash below, §10's
- * most important cue).
+ * Only drawn while a drag is active, or while the completed-pass flash
+ * (below) is playing — with neither, there's nothing to distinguish "the
+ * other two" from. Deliberately no glow outside a flash (preserves visual
+ * contrast for the completed-pass flash below, §10's most important cue).
  *
- * `flashProgress` (step 8, §10: "the pass line flashes bright cyan and
- * expands outward once") drives a one-shot brighten-and-thicken: full
- * white-hot alpha/glow/width at progress 0, easing back to the normal dim
- * line by progress 1. `null` outside an active flash — the ordinary dim
- * line, same as before step 8.
+ * `passFlash` (step 8, §10: "the pass line flashes bright cyan and expands
+ * outward once"; fixed 2026-08-23 polish pass — see below) drives a
+ * one-shot brighten-and-thicken: full colour-hot alpha/glow/width at
+ * progress 0, easing back to the normal dim line by progress 1. `null`
+ * outside an active flash — the ordinary dim line, gated on live
+ * `selectedIndex` same as before step 8.
+ *
+ * Bug fix (2026-08-23): this used to gate the ENTIRE function, flash
+ * included, on `selectedIndex === null` — but input.js:215 nulls
+ * `selectedIndex` on release, the exact instant the pass-in-flight/flash
+ * window begins, so the flash could never draw. `passFlash.index` is a
+ * snapshot of the launched circle's index, captured once in main.js at the
+ * moment the flash triggers (NOT read live off `selectedIndex`, already
+ * null by then, and NOT off `match.launchedIndex`, which rules.js can also
+ * null within the same or a later tick() call before this ever renders) —
+ * same reasoning as `goalFlash.scorer`/`fallingSince.position` elsewhere in
+ * this file. `passFlash.player` (also captured once, same reasoning —
+ * `match.currentPlayer` can flip mid-flash if the flick resolves quickly)
+ * fixes a second, previously-shipped bug: the flash used to always draw in
+ * `playerA`'s colour regardless of who actually passed.
  * @param {CanvasRenderingContext2D} ctx
  * @param {{scale: number, offsetX: number, offsetY: number}} transform
  * @param {{x: number, y: number}[]} circles
  * @param {number | null} selectedIndex
- * @param {number | null} [flashProgress]  0 (just completed) -> 1 (fully faded)
+ * @param {{index: number, player: 'A' | 'B', progress: number} | null} [passFlash]
+ *   progress: 0 (just completed) -> 1 (fully faded)
  */
-export function drawPassLine(ctx, transform, circles, selectedIndex, flashProgress = null) {
-  if (selectedIndex === null) return;
+export function drawPassLine(ctx, transform, circles, selectedIndex, passFlash = null) {
+  const excludeIndex = passFlash ? passFlash.index : selectedIndex;
+  if (excludeIndex === null) return;
   const { scale, offsetX, offsetY } = transform;
-  const others = circles.filter((_, i) => i !== selectedIndex);
+  const others = circles.filter((_, i) => i !== excludeIndex);
   const [a, b] = others;
 
   ctx.save();
-  if (flashProgress === null) {
+  if (passFlash === null) {
     ctx.strokeStyle = CONFIG.colors.passLine; // rgba() already bakes in 35% alpha — no extra globalAlpha
     ctx.lineWidth = CONFIG.passLineWidth;
   } else {
-    const ease = 1 - flashProgress; // 1 at the moment of completion -> 0 once fully faded
-    ctx.strokeStyle = CONFIG.colors.playerA; // "bright cyan" (§10) — playerA is this game's cyan token
+    const ease = 1 - passFlash.progress; // 1 at the moment of completion -> 0 once fully faded
+    const color = passFlash.player === 'A' ? CONFIG.colors.playerA : CONFIG.colors.playerB; // the passer's own colour, not always cyan
+    ctx.strokeStyle = color;
     ctx.globalAlpha = ease;
-    ctx.shadowColor = CONFIG.colors.playerA;
+    ctx.shadowColor = color;
     ctx.shadowBlur = CONFIG.pieceGlow * ease;
     ctx.lineWidth = CONFIG.passLineWidth * (1 + CONFIG.passFlash.widthBoost * ease); // "expands outward" — thickens toward the flash, settles back to normal
   }
@@ -292,25 +358,37 @@ export function drawPassLine(ctx, transform, circles, selectedIndex, flashProgre
 }
 
 /**
- * Step 8 (§10): "Moving circle: a fading trail — keep the last 12
- * positions, draw them at decreasing alpha." Drawn before `drawPieces` so
- * the real circle (full colour, full glow) renders on top of its own
- * trail, not the other way round. Flat fill, no glow — keeps the trail
- * visually subordinate to the real piece (§10: "that is what makes this
- * look cheap rather than sharp").
+ * Falling-star comet trail (polish pass, 2026-08-23, Eytan-approved
+ * Decision 2 — intentional deviation from BUILD_SPEC.md §10's flat "keep
+ * the last 12 positions, draw them at decreasing alpha"; see config.js's
+ * own comment on `CONFIG.trail`). Each of the launched circle's last
+ * `CONFIG.trail.length` interpolated positions is its own circle: alpha
+ * ramps in with a quadratic ease (`maxAlpha * t^alphaExponent`, dim tail ->
+ * bright head) and radius linearly tapers from `minRadiusScale` at the tail
+ * up to the full piece radius at the head — together a dissolving comet
+ * tail rather than a hard-edged stripe of same-size dots. Drawn before
+ * `drawPieces` so the real circle (full colour, full glow, drawn on top) is
+ * the bright comet head; no glow on the trail itself keeps it visually
+ * subordinate to that real piece (§10: "that is what makes this look cheap
+ * rather than sharp").
  * @param {CanvasRenderingContext2D} ctx
  * @param {{scale: number, offsetX: number, offsetY: number}} transform
- * @param {{x: number, y: number}[]} trail  oldest first, newest last
+ * @param {{x: number, y: number}[]} trail  oldest (tail) first, newest (head) last
+ * @param {string} color  the shooting player's colour
  */
-export function drawTrail(ctx, transform, trail) {
-  if (trail.length === 0) return;
+export function drawTrail(ctx, transform, trail, color) {
+  const n = trail.length;
+  if (n === 0) return;
   const { scale, offsetX, offsetY } = transform;
-  const r = CONFIG.piece.radius * scale;
+  const { minRadiusScale, maxAlpha, alphaExponent } = CONFIG.trail;
 
   ctx.save();
-  ctx.fillStyle = CONFIG.colors.piece;
-  for (let i = 0; i < trail.length; i++) {
-    ctx.globalAlpha = (i + 1) / trail.length;
+  ctx.fillStyle = color;
+  for (let i = 0; i < n; i++) {
+    const t = (i + 1) / n; // 0..1, tail -> head
+    const radiusScale = minRadiusScale + (1 - minRadiusScale) * t; // linear taper, not curved
+    const r = CONFIG.piece.radius * radiusScale * scale; // per-sample, not hoisted — each sample has its own radius
+    ctx.globalAlpha = maxAlpha * Math.pow(t, alphaExponent); // quadratic fade -> dissolve, not a hard-edged stripe
     ctx.beginPath();
     ctx.arc(offsetX + trail[i].x * scale, offsetY + trail[i].y * scale, r, 0, Math.PI * 2);
     ctx.fill();
@@ -322,25 +400,34 @@ export function drawTrail(ctx, transform, trail) {
  * Step 8 (§10): "Illegal flick (turn lost): a short red pulse on the field
  * border." Fires whenever a flick ends the turn without scoring (main.js
  * compares `match.currentPlayer` before/after a tick — a flip with no goal
- * means the turn ended) — a plain red stroke over the same rect
- * `drawFieldEdge`/`drawVoidLedge` already outline, fading out. Drawn
- * regardless of field mode: VOID has no persistent border, but the pulse is
- * a temporary overlay on top of whatever edge treatment is already there,
- * not a replacement for it.
+ * means the turn ended), or on a turn-timer forfeit — a stroke over the
+ * same rect `drawFieldEdge`/`drawVoidLedge` already outline, fading out.
+ * Drawn regardless of field mode: VOID has no persistent border, but the
+ * pulse is a temporary overlay on top of whatever edge treatment is
+ * already there, not a replacement for it.
+ *
+ * `color` (2026-08-23 polish pass, item 8/19): main.js now distinguishes
+ * three causes that used to share this identical red cue — a genuine
+ * missed/contact flick (still red, the original/default), a pass that
+ * completed but resolved as an unarmed goal (a rollback, not a foul — reads
+ * as a glitch if it fires the same red-after-a-bright-pass-flash cue), and
+ * a timeout forfeit (no flick attempt at all). Colour is the only variable;
+ * the pulse mechanics themselves are unchanged.
  * @param {CanvasRenderingContext2D} ctx
  * @param {{scale: number, offsetX: number, offsetY: number}} transform
  * @param {number} alpha  0 (gone) -> 1 (peak, just triggered)
+ * @param {string} [color]  defaults to this game's one red "foul" token
  */
-export function drawIllegalPulse(ctx, transform, alpha) {
+export function drawIllegalPulse(ctx, transform, alpha, color = CONFIG.colors.wallIllegal) {
   if (alpha <= 0) return;
   const { scale, offsetX, offsetY } = transform;
   const { w, h } = CONFIG.field;
 
   ctx.save();
   ctx.globalAlpha = alpha;
-  ctx.strokeStyle = CONFIG.colors.wallIllegal; // this game's one red token — reused, not a new colour
+  ctx.strokeStyle = color;
   ctx.lineWidth = BORDER_WIDTH * CONFIG.illegalPulse.widthMultiplier;
-  ctx.shadowColor = CONFIG.colors.wallIllegal;
+  ctx.shadowColor = color;
   ctx.shadowBlur = CONFIG.fieldEdgeGlow;
   ctx.strokeRect(offsetX, offsetY, w * scale, h * scale);
   ctx.restore();
@@ -510,6 +597,9 @@ export function drawAimLine(ctx, transform, circles, inputState) {
  *   no longer its own turn-machine phase, but the timer still shouldn't
  *   drain while a player is heads-down positioning their wall — same
  *   "pauses while you're not actively deciding your shot" intent as before.
+ *   Item 2 (2026-08-23): this gate gets to stay exactly as-is — it only
+ *   ever hid the DRAINING bar, never "whose turn" — see `drawTurnRail`
+ *   below, which is deliberately NOT gated on this.
  */
 export function drawTurnTimer(ctx, transform, match, isPlacingWall = false) {
   if (match.winner !== null || isPlacingWall) return;
@@ -536,28 +626,85 @@ export function drawTurnTimer(ctx, transform, match, isPlacingWall = false) {
 }
 
 /**
+ * Items 1/2 (2026-08-23 polish pass): a persistent, full-width turn-
+ * identity rail in the acting player's colour, plus a low-alpha wash over
+ * their own half of the field (the half nearest their rail/goal) — same
+ * `fillRect`+`globalAlpha` technique as `drawGoalFlash`'s wash, just
+ * persistent instead of one-shot. Deliberately separate from
+ * `drawTurnTimer`: this answers "whose turn is it," not "how much time is
+ * left," so unlike the draining bar it never shrinks/dims with the
+ * countdown and is NEVER suppressed during wall placement (item 2 — call
+ * it unconditionally, do not gate it on `isPlacingWall`). Positioned just
+ * outside `drawTurnTimer`'s own bar so both are visible simultaneously,
+ * never overlapping.
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {{scale: number, offsetX: number, offsetY: number}} transform
+ * @param {import('./rules.js').MatchState} match
+ */
+export function drawTurnRail(ctx, transform, match) {
+  if (match.winner !== null) return;
+  const { scale, offsetX, offsetY } = transform;
+  const { w, h } = CONFIG.field;
+  const { barThickness } = CONFIG.turnTimer;
+  const { thickness, gap, washAlpha } = CONFIG.turnRail;
+  const isA = match.currentPlayer === 'A';
+  const color = isA ? CONFIG.colors.playerA : CONFIG.colors.playerB;
+  const railY = isA
+    ? offsetY + h * scale + barThickness + gap
+    : offsetY - barThickness - gap - thickness;
+
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.fillRect(offsetX, railY, w * scale, thickness);
+  ctx.restore();
+
+  // Half-field wash: the half nearest the acting player's own rail/goal.
+  // Drawn under the grid/pieces by drawFrame's own call order, not here —
+  // this function doesn't control when it's called.
+  const halfH = (h / 2) * scale;
+  const washY = isA ? offsetY + halfH : offsetY;
+  ctx.save();
+  ctx.globalAlpha = washAlpha;
+  ctx.fillStyle = color;
+  ctx.fillRect(offsetX, washY, w * scale, halfH);
+  ctx.restore();
+}
+
+/**
  * The wall (§5/§7): a segment `CONFIG.wall.length` cells long, drawn
  * `CONFIG.wall.thickness` cells thick (a genuine cell-space value per §5 —
  * unlike BORDER_WIDTH, this one scales with the field) with round end caps,
  * which visually matches the physics model beneath it: the two endpoints
  * collide as circle-vs-point, not a flat cut-off edge. Reused for both the
- * confirmed wall and the live placement preview — only the color differs.
+ * confirmed wall and the live placement preview — colour AND `preview`
+ * differ between the two calls.
+ *
+ * `preview` (item 10, 2026-08-23 polish pass): an unconfirmed, still-being-
+ * dragged wall used to render byte-for-byte identical to a committed one —
+ * nothing visually marked it as "not real yet." Dashed instead when true;
+ * dash segment lengths derive from the wall's own thickness (a bare local,
+ * not a new CONFIG entry — same "pixel-space, not independently tunable"
+ * reasoning as this file's own `BORDER_WIDTH`) so the dash always reads
+ * proportionate regardless of scale.
  * @param {CanvasRenderingContext2D} ctx
  * @param {{scale: number, offsetX: number, offsetY: number}} transform
  * @param {import('./physics.js').Wall} wall @param {string} color
+ * @param {boolean} [preview]  true for an in-progress, unconfirmed placement
  */
-export function drawWall(ctx, transform, wall, color) {
+export function drawWall(ctx, transform, wall, color, preview = false) {
   const { scale, offsetX, offsetY } = transform;
   const { length, thickness } = CONFIG.wall;
   const p1 = { x: offsetX + wall.x * scale, y: offsetY + wall.y * scale };
   const p2 = wall.orientation === 'horizontal'
     ? { x: offsetX + (wall.x + length) * scale, y: p1.y }
     : { x: p1.x, y: offsetY + (wall.y + length) * scale };
+  const lineWidth = thickness * scale;
 
   ctx.save();
   ctx.strokeStyle = color;
-  ctx.lineWidth = thickness * scale;
+  ctx.lineWidth = lineWidth;
   ctx.lineCap = 'round';
+  if (preview) ctx.setLineDash([lineWidth * 1.5, lineWidth]);
   ctx.beginPath();
   ctx.moveTo(p1.x, p1.y);
   ctx.lineTo(p2.x, p2.y);
@@ -601,7 +748,7 @@ export function drawWallLegalOverlay(ctx, transform, orientation, world, color, 
 
   ctx.save();
   ctx.strokeStyle = color;
-  ctx.globalAlpha = 0.15;
+  ctx.globalAlpha = CONFIG.wall.legalOverlayAlpha; // item 9: 0.15 -> 0.4, see config.js's own comment
   ctx.lineWidth = 3;
   ctx.beginPath();
   if (orientation === 'horizontal') {
@@ -651,27 +798,40 @@ export function drawWallLegalOverlay(ctx, transform, orientation, world, color, 
  * @param {{preview: import('./physics.js').Wall | null, placingFor: 'A' | 'B' | null}} [wallState]
  * @param {{position: {x: number, y: number}, alpha: number} | null} [fallingFade]  see drawFallingGhost
  * @param {{x: number, y: number}[]} [trail]  see drawTrail; defaults to empty (no trail)
- * @param {number | null} [passFlashProgress]  see drawPassLine
+ * @param {string | null} [trailColor]  see drawTrail's `color` param — the
+ *   shooter's colour, snapshotted once in main.js when the trail begins;
+ *   null whenever `trail` is empty. NOT derived here from live
+ *   `match.currentPlayer` — same misattribution risk `passFlash`/`goalFlash`/
+ *   `illegalPulseColor` already guard against (fixed 2026-08-24 follow-up).
+ * @param {{index: number, player: 'A' | 'B', progress: number} | null} [passFlash]  see drawPassLine
  * @param {number} [illegalPulseAlpha]  see drawIllegalPulse; defaults to 0 (off)
  * @param {{scorer: 'A' | 'B', progress: number} | null} [goalFlash]  see drawGoalFlash
+ * @param {string} [illegalPulseColor]  see drawIllegalPulse; defaults to the red "foul" token
  */
 export function drawFrame(
   ctx, viewportW, viewportH, circles, inputState, match, world, wallState,
-  fallingFade = null, trail = [], passFlashProgress = null, illegalPulseAlpha = 0, goalFlash = null
+  fallingFade = null, trail = [], trailColor = null, passFlash = null, illegalPulseAlpha = 0, goalFlash = null,
+  illegalPulseColor = CONFIG.colors.wallIllegal
 ) {
   const transform = computeScale(viewportW, viewportH);
   // Player A's target is the top goal (B's own end); Player B's target is
   // the bottom goal (A's own end) — matches BUILD_SPEC.md §2's attack/own
   // mapping and the render.js colour convention already established.
-  const armedGoal = match.armed ? (match.currentPlayer === 'A' ? 'top' : 'bottom') : null;
+  // targetGoal (item 3): same mapping as armedGoal below, but NOT gated on
+  // match.armed — the chevron is an always-on "where you're shooting"
+  // cue, present from turn start, unlike armedGoal's glow boost.
+  const targetGoal = match.currentPlayer === 'A' ? 'top' : 'bottom';
+  const armedGoal = match.armed ? targetGoal : null;
   const placing = wallState?.placingFor != null && wallState?.preview;
 
   drawBackground(ctx, viewportW, viewportH);
+  drawTurnRail(ctx, transform, match); // items 1/2 — drawn right after the background so its half-field wash sits under the grid/pieces; never gated on `placing`
   drawGrid(ctx, transform);
   drawFieldEdge(ctx, transform);
   if (CONFIG.field.mode === 'void') drawVoidLedge(ctx, transform);
-  drawIllegalPulse(ctx, transform, illegalPulseAlpha);
+  drawIllegalPulse(ctx, transform, illegalPulseAlpha, illegalPulseColor);
   drawGoals(ctx, transform, armedGoal);
+  if (match.winner === null) drawGoalChevron(ctx, transform, targetGoal); // item 3 — same "hide once won" as drawTurnTimer/drawArmedBadge/drawTurnRail
   drawGoalFlash(ctx, transform, goalFlash);
 
   // While a player is actively repositioning their own wall, its old (still
@@ -686,8 +846,8 @@ export function drawFrame(
     drawWallLegalOverlay(ctx, transform, wallState.preview.orientation, world, wallOwnerColor(wallState.placingFor), wallState.placingFor);
   }
 
-  drawPassLine(ctx, transform, circles, inputState.selectedIndex, passFlashProgress);
-  drawTrail(ctx, transform, trail);
+  drawPassLine(ctx, transform, circles, inputState.selectedIndex, passFlash);
+  drawTrail(ctx, transform, trail, trailColor);
   drawPieces(ctx, transform, circles, inputState);
   drawFallingGhost(ctx, transform, fallingFade);
   drawAimLine(ctx, transform, circles, inputState);
@@ -696,6 +856,6 @@ export function drawFrame(
 
   if (placing) {
     const legal = isWallLegal(wallState.preview, world, wallState.placingFor);
-    drawWall(ctx, transform, wallState.preview, legal ? wallOwnerColor(wallState.placingFor) : CONFIG.colors.wallIllegal);
+    drawWall(ctx, transform, wallState.preview, legal ? wallOwnerColor(wallState.placingFor) : CONFIG.colors.wallIllegal, true);
   }
 }

@@ -257,7 +257,7 @@ export function checkFalls(world) {
  * Axis-independent per edge: the x-check only ever reads/writes x/vx, the
  * y-check only ever reads/writes y/vy (using the already-resolved x to
  * decide goal-span membership — safe, since a circle whose x was just
- * clamped to a side rail, ~0.4 or ~9.6, can never simultaneously be inside
+ * clamped to a side rail, ~0.3 or ~9.7, can never simultaneously be inside
  * the goal's x-range, ~3.5 to 6.5), so a corner resolves correctly with
  * zero special-casing regardless of check order.
  *

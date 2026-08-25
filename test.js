@@ -305,11 +305,13 @@ check('NaN/Infinity sweep: a grid of pull-direction x magnitude combos stays fin
 
 check('circle-circle contact: a moving circle that would overlap a stationary one stops dead and de-penetrates to exactly 2*radius apart', () => {
   const r = CONFIG.piece.radius;
-  // 1.0 apart at rest (no overlap); circle 0 launched at max speed straight
-  // at circle 1 covers enough ground in a single dt=1/120 step to cross into
-  // contact (< 2*radius) — verified: drag-adjusted travel ~0.214 cells, gap
-  // was only 1.0 - 2*radius = 0.2 cells.
-  const world = createWorld([{ x: 4, y: 5 }, { x: 5, y: 5 }, { x: 1, y: 1 }]);
+  // Gap sized as 2*radius + 0.2 (not a fixed literal) so this test still
+  // reaches contact after the radius 0.4 -> 0.3 polish-pass change (2026-08-
+  // 23): circle 0 launched at max speed straight at circle 1 covers enough
+  // ground in a single dt=1/120 step to cross into contact (< 2*radius) —
+  // verified: drag-adjusted travel ~0.214 cells > the 0.2-cell gap-to-
+  // contact margin this geometry produces at any radius.
+  const world = createWorld([{ x: 4, y: 5 }, { x: 4 + 2 * r + 0.2, y: 5 }, { x: 1, y: 1 }]);
   world.circles[0].vx = CONFIG.physics.maxSpeed;
   step(world);
 

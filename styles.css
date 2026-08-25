@@ -54,13 +54,28 @@ canvas {
    this (must match — same CSS/config.js duplication as everything else
    here), so this never overlaps the grid. B on the left, A on the right,
    matching §10's stated HUD token order; wall-uses/match-clock join this
-   bar later (steps 5/6), not built yet. */
+   bar later (steps 5/6), not built yet.
+
+   height 40px -> 56px (item 14, 2026-08-23 polish pass): must match
+   CONFIG.hud.height exactly, same duplication as every CSS/config.js pair
+   in this file — see that value's own comment for why it grew.
+
+   left/width (item 13): on desktop the field is centred and narrower than
+   the viewport (render.js's computeScale), which used to leave this bar
+   spanning the FULL viewport width while the scores it describes sat far
+   inward, near the narrower field. main.js's resize() now publishes the
+   field's own left offset/width as --field-left/--field-width custom
+   properties (recomputed on every resize, initial paint included) — this
+   constrains the bar to exactly that range instead. Fallbacks (0px / 100%)
+   keep the old full-width behaviour if JS hasn't run yet, so there's no
+   layout flash. `max()` against the safe-area inset covers the phone/notch
+   case, where --field-left is typically smaller than the inset. */
 #hud {
   position: fixed;
   top: env(safe-area-inset-top);
-  left: env(safe-area-inset-left);
-  right: env(safe-area-inset-right);
-  height: 40px; /* CONFIG.hud.height */
+  left: max(env(safe-area-inset-left), var(--field-left, 0px));
+  width: var(--field-width, 100%);
+  height: 56px; /* CONFIG.hud.height */
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -109,15 +124,27 @@ canvas {
    click-test it). Small negative margin compensates for the added padding
    so it doesn't visibly widen the HUD row's rhythm; padding itself exists
    to keep the tap target closer to a real touch-target size, not just the
-   bare glyph bounds of "Wall" at 0.6em. */
+   bare glyph bounds of "Wall" at 0.6em.
+
+   Item 14/15 (2026-08-23 polish pass): raised opacity/weight/size — this
+   was "the dimmest text up there" despite being the only interactive
+   element in the whole HUD; relabeled "Move Wall" (item 15) so it doesn't
+   read as a leftover ammo counter ("0 Wall"/"Wall 0" in earlier builds) —
+   the verb now matches what the button actually does (move/remove an
+   existing wall, never "create"). Padding/negative-margin bumped to match
+   the new size while keeping the real >=44px touch target the accessibility
+   guideline asks for (hud.height's own 56px now gives this room to grow;
+   see that value's comment for why relocating out of the HUD entirely was
+   the riskier of the two pre-approved options). */
 .wall-button {
   font-family: inherit;
-  font-size: 0.6em;
-  opacity: 0.55;
+  font-size: 0.75em;
+  font-weight: 700;
+  opacity: 0.7;
   background: transparent;
   border: none;
-  padding: 10px 8px;
-  margin: -10px -8px;
+  padding: 14px 10px;
+  margin: -14px -10px;
   pointer-events: auto;
   cursor: default;
 }
@@ -129,13 +156,36 @@ canvas {
 #wall-button-b { color: #F59E0B; }
 #wall-button-a { color: #22D3EE; }
 
-/* §8b: "shown in the HUD, centred, small. It turns amber under 60 seconds." */
-#match-clock {
-  color: #E2F6FF; /* CONFIG.colors.piece */
-  font-size: 0.8em;
+/* HUD centre slot (item 4, 2026-08-23 polish pass): turn countdown is now
+   the primary readout here — the number a player actually needs mid-turn —
+   with the 5-minute match clock demoted beneath it, smaller/dimmer. Both
+   stay inside one flex column so #hud's own 3-child space-between layout
+   (B group / centre / A group) is unaffected by adding a second element. */
+#hud-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.15;
 }
 
-#match-clock.low {
+#turn-clock {
+  color: #E2F6FF; /* CONFIG.colors.piece */
+  font-size: 1em; /* the HUD's own base size (20px) — this is the primary centre readout now */
+}
+
+/* §8b: "shown in the HUD, centred, small. It turns amber under 60 seconds."
+   Demoted to secondary (item 4): smaller than before (was 0.8em) and
+   dimmed, now that turn-clock above it is the primary centre readout. */
+#match-clock {
+  color: #E2F6FF; /* CONFIG.colors.piece */
+  font-size: 0.55em;
+  opacity: 0.7;
+}
+
+/* Shared "under threshold" urgency treatment — reused by both #turn-clock
+   (under 5s left) and #match-clock (under 60s left), same amber+glow cue
+   the rest of this game already uses for "time's running out." */
+.low {
   color: #F59E0B; /* CONFIG.colors.playerB, reused as "amber" — no separate amber token exists */
   text-shadow: 0 0 8px currentColor;
 }
@@ -167,6 +217,17 @@ canvas {
   text-align: center;
 }
 
+/* Item 18 (2026-08-23 polish pass): "Play again" now restarts the SAME
+   field/mode (main.js), so a second, smaller, clearly-secondary "Change
+   field" control is added alongside it for players who actually want the
+   mode picker back — same row, visually subordinate (smaller/dimmer/no
+   border) so it never competes with the primary action. */
+.win-actions {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
 #play-again {
   font-family: inherit;
   font-size: 18px;
@@ -175,6 +236,18 @@ canvas {
   border: 2px solid #164E63; /* CONFIG.colors.fieldEdge */
   border-radius: 4px;
   padding: 12px 32px;
+  cursor: pointer;
+}
+
+#change-field {
+  font-family: inherit;
+  font-size: 13px;
+  color: #E2F6FF; /* CONFIG.colors.piece */
+  opacity: 0.6;
+  background: transparent;
+  border: none;
+  text-decoration: underline;
+  padding: 12px 8px; /* touch target padding, not visual size — matches .wall-button's own reasoning */
   cursor: pointer;
 }
 
@@ -223,6 +296,25 @@ canvas {
 #wall-remove {
   border-color: #EF4444; /* CONFIG.colors.wallIllegal, reused as this game's one "be careful" red — takes your wall off the field entirely */
   color: #EF4444;
+  opacity: 0.7; /* item 11: rarely-used action, de-emphasised same as #wall-cancel below */
+}
+
+/* Item 11 (2026-08-23 polish pass): Cancel/Rotate used to look identical
+   despite very different usage frequency (Rotate: tapped constantly while
+   placing; Cancel/Remove: rare, one-off). Simpler size/weight/border
+   restyle rather than moving Rotate onto the wall preview as a tap gesture
+   — input.js's onWallPointerDown already re-snaps the preview to the tap
+   position on pointerdown, so binding tap-to-rotate there risks breaking
+   the existing drag-to-reposition interaction; not worth that risk for a
+   HUD-styling item. */
+#wall-rotate {
+  font-weight: 700;
+  font-size: 16px;
+  border-width: 3px;
+}
+
+#wall-cancel {
+  opacity: 0.7; /* rarely used — closes the dialog with nothing spent */
 }
 
 /* Mode picker (§12 step 7): "a mode toggle before the match" — deliberately
@@ -256,6 +348,27 @@ canvas {
   gap: 16px;
 }
 
+/* Item 16 (2026-08-23 polish pass): one line of copy under each button
+   explaining its actual gameplay consequence — plain text, not a new
+   thumbnail canvas render (not worth the cost for a pre-match, one-time
+   pick). Each option is its own column so the description sits directly
+   under its own button, not ambiguously between both. */
+.mode-option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 150px;
+}
+
+.mode-desc {
+  margin: 0;
+  font-size: 12px;
+  opacity: 0.65;
+  text-align: center;
+  line-height: 1.4;
+}
+
 #mode-picker button {
   font-family: inherit;
   font-size: 16px;
@@ -265,4 +378,46 @@ canvas {
   border-radius: 4px;
   padding: 14px 28px;
   cursor: pointer;
+}
+
+/* Turn-start prompt (Part 3, 2026-08-23 polish pass): "Place your wall — or
+   just take your shot," shown before the acting player's first action of
+   the turn. Same bottom-band screen position #wall-controls uses (this
+   element sits immediately before it in DOM order in index.html) — the two
+   are mutually exclusive in practice (this hides the instant a circle is
+   grabbed, well before placement mode could ever open), so no z-index/
+   layering rule is needed between them beyond source order.
+
+   pointer-events: none is load-bearing, not decorative — this sits over
+   the canvas drag area and must never block a real drag/tap underneath.
+   This exact class of bug already shipped once in this project (untappable
+   wall buttons, an INHERITED pointer-events:none from a #hud ancestor) —
+   the risk here runs the opposite direction (a new element ITSELF set to
+   none, sitting on top of the canvas) but the same double-check applies:
+   this element has no interactive children, so there's nothing to
+   accidentally leak pointer-events:auto onto. */
+#turn-prompt {
+  display: none;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(env(safe-area-inset-bottom) + 16px);
+  text-align: center;
+  font-family: ui-monospace, 'SF Mono', 'Consolas', monospace; /* CONFIG.font */
+  font-size: 13px; /* CONFIG.turnPrompt.fontSize */
+  opacity: 0.7;
+  text-shadow: 0 0 8px currentColor;
+  pointer-events: none;
+}
+
+#turn-prompt.visible {
+  display: block;
+}
+
+#turn-prompt.for-a {
+  color: #22D3EE; /* CONFIG.colors.playerA */
+}
+
+#turn-prompt.for-b {
+  color: #F59E0B; /* CONFIG.colors.playerB */
 }

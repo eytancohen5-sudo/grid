@@ -21,17 +21,24 @@ const canvas = document.getElementById('game');
 if (!(canvas instanceof HTMLCanvasElement)) throw new Error('missing #game canvas');
 
 const popup = document.getElementById('goal-popup');
-if (!(popup instanceof HTMLElement)) throw new Error('missing #goal-popup element');
+const goalScoreA = document.getElementById('goal-score-a'); // Fix 1 (2026-08-24 follow-up): pre-declared in index.html so onGoal() below can set .textContent/.style.color instead of building an HTML string
+const goalScoreB = document.getElementById('goal-score-b');
+if (
+  !(popup instanceof HTMLElement) || !(goalScoreA instanceof HTMLElement) || !(goalScoreB instanceof HTMLElement)
+) {
+  throw new Error('missing #goal-popup/#goal-score-a/#goal-score-b elements');
+}
 
 const scoreA = document.getElementById('score-a');
 const scoreB = document.getElementById('score-b');
 const wallButtonA = document.getElementById('wall-button-a');
 const wallButtonB = document.getElementById('wall-button-b');
 const matchClockEl = document.getElementById('match-clock');
+const turnClockEl = document.getElementById('turn-clock'); // item 4: HUD centre slot's new primary readout
 if (
   !(scoreA instanceof HTMLElement) || !(scoreB instanceof HTMLElement) ||
   !(wallButtonA instanceof HTMLButtonElement) || !(wallButtonB instanceof HTMLButtonElement) ||
-  !(matchClockEl instanceof HTMLElement)
+  !(matchClockEl instanceof HTMLElement) || !(turnClockEl instanceof HTMLElement)
 ) {
   throw new Error('missing HUD elements');
 }
@@ -39,9 +46,16 @@ if (
 const winOverlay = document.getElementById('win-overlay');
 const winMessage = document.getElementById('win-message');
 const playAgainButton = document.getElementById('play-again');
-if (!(winOverlay instanceof HTMLElement) || !(winMessage instanceof HTMLElement) || !(playAgainButton instanceof HTMLElement)) {
-  throw new Error('missing #win-overlay/#win-message/#play-again elements');
+const changeFieldButton = document.getElementById('change-field'); // item 18: separate from Play again's own same-field restart
+if (
+  !(winOverlay instanceof HTMLElement) || !(winMessage instanceof HTMLElement) ||
+  !(playAgainButton instanceof HTMLElement) || !(changeFieldButton instanceof HTMLElement)
+) {
+  throw new Error('missing #win-overlay/#win-message/#play-again/#change-field elements');
 }
+
+const turnPrompt = document.getElementById('turn-prompt'); // Part 3
+if (!(turnPrompt instanceof HTMLElement)) throw new Error('missing #turn-prompt element');
 
 const wallControls = document.getElementById('wall-controls');
 const wallCancelButton = document.getElementById('wall-cancel');
@@ -70,13 +84,26 @@ const world = createWorld(KICKOFF.A);
 world.walls = initialWalls(); // §7: both players' walls exist from the very start, same as resetMatch gives every later match
 const match = createMatchState();
 
-let ctx = setupContext(canvas, canvas.clientWidth, canvas.clientHeight);
+/** @type {CanvasRenderingContext2D} */
+let ctx;
 
 /** Updates the canvas backing store for the current viewport/DPR. Does not
- * touch `world` — a resize never resets simulation state. */
+ * touch `world` — a resize never resets simulation state.
+ *
+ * Item 13 (2026-08-23 polish pass): also publishes the field's own left
+ * offset/width as CSS custom properties, so styles.css can constrain #hud
+ * to that range instead of the full viewport (on desktop the field is
+ * centred and narrower than the viewport — computeScale — which used to
+ * leave the score readouts far from the field they describe). Called once
+ * up front (below) for the initial paint, not just on every subsequent
+ * resize event, so the properties are never left unset on first load. */
 function resize() {
   ctx = setupContext(canvas, canvas.clientWidth, canvas.clientHeight);
+  const { scale, offsetX } = computeScale(canvas.clientWidth, canvas.clientHeight);
+  document.documentElement.style.setProperty('--field-left', `${offsetX}px`);
+  document.documentElement.style.setProperty('--field-width', `${CONFIG.field.w * scale}px`);
 }
+resize();
 
 window.addEventListener('resize', resize);
 window.visualViewport?.addEventListener('resize', resize);
@@ -105,13 +132,43 @@ let fallingSince = null;
  * (same reasoning as `fallingSince`), so a single shared array is enough. */
 let trail = [];
 
-/** @type {number | null} wall-clock start of the completed-pass flash
- * (§10), performance.now()-based like every other one-shot effect here. */
-let passFlashSince = null;
+/** @type {string | null} Fix 2 (2026-08-24 follow-up): the shooting
+ * player's colour, snapshotted once at the instant the trail begins (the
+ * same `prevCurrentPlayer` captured below for the pass-flash fix is the
+ * source) rather than read live off `match.currentPlayer` at render time —
+ * same reasoning as `passFlash`/`goalFlash`/`illegalPulseColor`: a live
+ * read can misattribute the effect once currentPlayer/launchedIndex change
+ * mid-resolution. Cleared alongside `trail` itself. */
+let trailColor = null;
 
-/** @type {number | null} wall-clock start of the "turn lost, no goal" red
+/** @type {{index: number, player: 'A'|'B', since: number} | null} the
+ * completed-pass flash (§10), performance.now()-based like every other
+ * one-shot effect here. `index`/`player` are captured once, at the instant
+ * the flash triggers below — NOT read live off input.js's selectedIndex
+ * (already null by the time a flick is in flight: input.js:215 nulls it on
+ * release, before this flash's own window even opens) or off
+ * match.currentPlayer/match.launchedIndex (rules.js can resolve the flick
+ * — flipping currentPlayer and nulling launchedIndex — inside the very
+ * tick() call that raises this edge, or later within the flash's own
+ * display window; either live read would misattribute the flash to the
+ * wrong pair of circles or the wrong colour). Fixes a real bug: this used
+ * to be a bare timestamp and the draw call filtered on live selectedIndex,
+ * which meant the flash never rendered at all (see render.js's drawPassLine
+ * doc comment for the full story). */
+let passFlash = null;
+
+/** @type {number | null} wall-clock start of the "turn lost, no goal"
  * border pulse (§10). */
 let illegalPulseSince = null;
+
+/** @type {string} colour for the pulse above — varies by cause (2026-08-23
+ * polish pass): red for a genuine missed/contact flick (default, matches
+ * drawIllegalPulse's own default), white for a pass that completed but
+ * resolved as an unarmed goal (a rollback, not a foul — see the physics
+ * loop below), the forfeiting player's own colour for a timeout. Set
+ * alongside `illegalPulseSince` at every trigger site, never read before
+ * `illegalPulseSince` is first set. */
+let illegalPulseColor = CONFIG.colors.wallIllegal;
 
 /** @type {{scorer: 'A' | 'B', since: number} | null} wall-clock start of
  * the goal flood/grid-pulse (§10) — `scorer` is captured once (same
@@ -155,6 +212,32 @@ function updateMatchClockDisplay() {
 }
 updateMatchClockDisplay();
 
+/** Item 4 (2026-08-23 polish pass): the turn countdown as an actual number
+ * in the HUD's centre slot — same "only touch the DOM on an actual second
+ * change" pattern as updateMatchClockDisplay above. No extra gating for
+ * wall placement/etc needed here: match.turnTimeLeft itself already just
+ * holds steady whenever the turn-timer decrement below is paused, so the
+ * displayed number naturally holds steady too. */
+let lastDisplayedTurnSeconds = null;
+function updateTurnClockDisplay() {
+  const totalSeconds = Math.ceil(match.turnTimeLeft);
+  if (totalSeconds === lastDisplayedTurnSeconds) return;
+  lastDisplayedTurnSeconds = totalSeconds;
+  turnClockEl.textContent = String(totalSeconds);
+  turnClockEl.classList.toggle('low', totalSeconds <= 5 && totalSeconds > 0);
+}
+updateTurnClockDisplay();
+
+/** Item 17 (2026-08-23 polish pass): "Player A"/"Player B" used to only
+ * ever appear once, on the win screen — everywhere else in this game
+ * identity is colour+side (scores, walls, goals, the turn rail). Dropped
+ * the letters from the win screen in favour of the same colour-name
+ * language rather than adding a persistent HUD label elsewhere (HUD space
+ * is already tight after items 4/14's growth). */
+function playerLabel(player) {
+  return player === 'A' ? 'CYAN' : 'AMBER';
+}
+
 /**
  * §9: on a normal goal, a brief popup then kick-off continues (rules.js
  * already applied that reset synchronously — the scrim covers the field
@@ -172,12 +255,21 @@ function onGoal(result) {
   if (result.winner) {
     const loser = result.winner === 'A' ? 'B' : 'A';
     const how = match.winReason === 'clock' ? 'on the clock' : `${match.score[result.winner]}–${match.score[loser]}`;
-    winMessage.textContent = `Player ${result.winner} wins — ${how}!`;
+    winMessage.textContent = `${playerLabel(result.winner)} WINS — ${how}!`;
     winMessage.style.color = result.winner === 'A' ? CONFIG.colors.playerA : CONFIG.colors.playerB;
     winOverlay.classList.add('visible');
     return;
   }
-  popup.textContent = 'Congrats!';
+  // Item 7 (polish pass): show the actual score, scorer's own number in
+  // their own colour — not just "Congrats!". Fix 1 (2026-08-24 follow-up):
+  // the two numbers are pre-declared <span>s in index.html now, updated via
+  // .textContent + .style.color — same pattern updateHud/winMessage already
+  // use — instead of building an HTML string (this was the only innerHTML
+  // use in the codebase).
+  goalScoreA.textContent = String(match.score.A);
+  goalScoreA.style.color = CONFIG.colors.playerA;
+  goalScoreB.textContent = String(match.score.B);
+  goalScoreB.style.color = CONFIG.colors.playerB;
   popup.style.color = result.scorer === 'A' ? CONFIG.colors.playerA : CONFIG.colors.playerB;
   popup.classList.add('visible');
   popupUntil = performance.now() + CONFIG.goalPopup.durationMs;
@@ -188,17 +280,34 @@ function onGoal(result) {
  * on its own and show the overlay itself. */
 function checkClockWin() {
   if (match.winner === null || winOverlay.classList.contains('visible')) return;
-  winMessage.textContent = `Player ${match.winner} wins — on the clock!`;
+  winMessage.textContent = `${playerLabel(match.winner)} WINS — ON THE CLOCK!`;
   winMessage.style.color = match.winner === 'A' ? CONFIG.colors.playerA : CONFIG.colors.playerB;
   winOverlay.classList.add('visible');
 }
 
-playAgainButton.addEventListener('click', () => {
+/** Shared reset steps for both win-overlay actions below — score/turn/world
+ * state back to a fresh match start, same either way. */
+function resetForNewMatch() {
   resetMatch(match, world);
   updateHud();
   lastDisplayedMatchSeconds = null;
   updateMatchClockDisplay();
+  lastDisplayedTurnSeconds = null;
+  updateTurnClockDisplay();
   winOverlay.classList.remove('visible');
+}
+
+// Item 18 (2026-08-23 polish pass): "Play again" now restarts the SAME
+// field/mode instead of bouncing back to the mode-picker screen —
+// CONFIG.field.mode is already set from the match that just ended, and
+// modeChosen stays true, so play can resume immediately.
+playAgainButton.addEventListener('click', resetForNewMatch);
+
+// "Change field" is the smaller, separate control for switching ARENA/VOID
+// without a reload — this is the mode-picker round trip Play again used to
+// always do.
+changeFieldButton.addEventListener('click', () => {
+  resetForNewMatch();
   modeChosen = false;
   modePicker.classList.remove('hidden');
 });
@@ -313,6 +422,11 @@ function frame(now) {
   while (accumulator >= CONFIG.physics.dt) {
     const wasPassedThisFlick = match.passedThisFlick;
     const prevCurrentPlayer = match.currentPlayer;
+    // Pre-tick snapshot for the pass-flash fix below — rulesTick() (called
+    // just below) can null match.launchedIndex within this very call, once
+    // the flick resolves, so it must be captured before that call runs, not
+    // read back off `match` afterward.
+    const launchedIndexThisStep = match.launchedIndex;
 
     const contacts = step(world);
     const fallen = checkFalls(world); // VOID mode only; always [] in ARENA
@@ -331,19 +445,41 @@ function frame(now) {
     // turnover) except a completed pass or an own goal, neither of which
     // ends the turn — so a flip with no goal result is exactly the miss/
     // contact/rollback case §10 calls "illegal."
-    if (!wasPassedThisFlick && match.passedThisFlick) passFlashSince = now;
+    //
+    // `index`/`player` snapshotted here (not read live later) — see
+    // passFlash's own doc comment above for why.
+    if (!wasPassedThisFlick && match.passedThisFlick) {
+      passFlash = { index: launchedIndexThisStep, player: prevCurrentPlayer, since: now };
+    }
     if (result?.type === 'goal') {
       goalFlash = { scorer: result.scorer, since: now };
     } else if (prevCurrentPlayer !== match.currentPlayer) {
       illegalPulseSince = now;
+      // Item 8: a pass that completed but resolved as an unarmed goal
+      // (rules.js case 3 — a rollback, not a foul) is distinguishable here
+      // purely from state main.js can already observe: rules.js never
+      // resets match.goalThisFlick after resolving, so if a goal-crossing
+      // happened at all this flick AND the turn still ended with no `goal`
+      // result above, that's unambiguously case 3 (case 2, armed+goal,
+      // would have returned a `goal` result and taken the branch above
+      // instead). Gets its own colour so it doesn't fire the identical red
+      // cue right after a bright pass flash — see drawIllegalPulse's doc
+      // comment.
+      illegalPulseColor = match.goalThisFlick ? CONFIG.colors.pieceActive : CONFIG.colors.wallIllegal;
     }
 
     if (match.launchedIndex !== null) {
+      // Snapshot on the rising edge only (trail.length === 0 -> about to
+      // push the first sample) — same prevCurrentPlayer already captured
+      // above, not a live read taken later at render time. See trailColor's
+      // own doc comment above for why.
+      if (trail.length === 0) trailColor = prevCurrentPlayer === 'A' ? CONFIG.colors.playerA : CONFIG.colors.playerB;
       const c = world.circles[match.launchedIndex];
       trail.push({ x: c.x, y: c.y });
       if (trail.length > CONFIG.trail.length) trail.shift();
     } else if (trail.length > 0) {
       trail = [];
+      trailColor = null;
     }
 
     if (result) onGoal(result);
@@ -363,8 +499,10 @@ function frame(now) {
 
   // Same one-shot fade-and-clear pattern as fallingFade above, for each of
   // step 8's three timed effects.
-  if (passFlashSince !== null && now - passFlashSince >= CONFIG.passFlash.durationMs) passFlashSince = null;
-  const passFlashProgress = passFlashSince !== null ? (now - passFlashSince) / CONFIG.passFlash.durationMs : null;
+  if (passFlash !== null && now - passFlash.since >= CONFIG.passFlash.durationMs) passFlash = null;
+  const passFlashRender = passFlash
+    ? { index: passFlash.index, player: passFlash.player, progress: (now - passFlash.since) / CONFIG.passFlash.durationMs }
+    : null;
 
   if (illegalPulseSince !== null && now - illegalPulseSince >= CONFIG.illegalPulse.durationMs) illegalPulseSince = null;
   const illegalPulseAlpha = illegalPulseSince !== null ? Math.max(0, 1 - (now - illegalPulseSince) / CONFIG.illegalPulse.durationMs) : 0;
@@ -389,16 +527,42 @@ function frame(now) {
   // `modeChosen`: without it, a player still reading the mode picker burns
   // their first turn timer in the background and can get silently
   // forfeited before the match has visibly started.
-  if (
+  //
+  // Extracted to `awaitingShot` (Part 3, 2026-08-23 polish pass): this
+  // predicate now has a second consumer — the turn-prompt below reads it
+  // too, to know when the acting player hasn't done anything yet this
+  // turn. Same value, no behaviour change to the timer gate itself.
+  const awaitingShot =
     modeChosen && match.winner === null && popupUntil === null && input.getWallState().placingFor === null &&
-    match.launchedIndex === null && isSettled(world)
-  ) {
+    match.launchedIndex === null && isSettled(world);
+  if (awaitingShot) {
     match.turnTimeLeft = Math.max(0, match.turnTimeLeft - rawElapsed);
     if (match.turnTimeLeft === 0) {
       const prevCurrentPlayer = match.currentPlayer;
       forfeitTurn(match);
-      if (match.currentPlayer !== prevCurrentPlayer) illegalPulseSince = now; // always true — forfeitTurn always flips — kept explicit for symmetry with the physics-loop trigger above
+      if (match.currentPlayer !== prevCurrentPlayer) {
+        // always true — forfeitTurn always flips — kept explicit for symmetry with the physics-loop trigger above
+        illegalPulseSince = now;
+        // Item 19: a timeout forfeit (no flick attempted at all) gets the
+        // forfeiting player's own colour — distinct from both the red
+        // missed-flick cue and item 8's white wasted-pass cue above.
+        illegalPulseColor = prevCurrentPlayer === 'A' ? CONFIG.colors.playerA : CONFIG.colors.playerB;
+      }
     }
+  }
+
+  // Part 3 (2026-08-23 polish pass): "Place your wall — or just take your
+  // shot," shown only before the acting player's first action of the turn
+  // — disappears the instant they grab a circle (selectedIndex !== null),
+  // no dismiss button, no timer, no turn-counter. flicksThisTurn === 0 is
+  // what keeps this from reappearing after a completed pass mid-turn (the
+  // player has already acted this turn at that point, even though nothing
+  // is currently selected).
+  const showTurnPrompt = awaitingShot && match.flicksThisTurn === 0 && input.getState().selectedIndex === null;
+  turnPrompt.classList.toggle('visible', showTurnPrompt);
+  if (showTurnPrompt) {
+    turnPrompt.classList.toggle('for-a', match.currentPlayer === 'A');
+    turnPrompt.classList.toggle('for-b', match.currentPlayer === 'B');
   }
 
   // §8b: the match clock ticks continuously — including through physics
@@ -409,6 +573,7 @@ function frame(now) {
     checkClockWin();
   }
   updateMatchClockDisplay();
+  updateTurnClockDisplay();
 
   const alpha = accumulator / CONFIG.physics.dt;
   const interpolated = world.circles.map((c) =>
@@ -417,7 +582,7 @@ function frame(now) {
 
   drawFrame(
     ctx, canvas.clientWidth, canvas.clientHeight, interpolated, input.getState(), match, world, input.getWallState(),
-    fallingFade, trail, passFlashProgress, illegalPulseAlpha, goalFlashRender
+    fallingFade, trail, trailColor, passFlashRender, illegalPulseAlpha, goalFlashRender, illegalPulseColor
   );
   requestAnimationFrame(frame);
 }

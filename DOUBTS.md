@@ -472,3 +472,117 @@ questions (turn length via continue-on-success, strict-contact punishing new pla
 now have real instrumentation/data behind them once you play a few matches; (3) every
 "first-guess" CONFIG number called out above is exactly that — a working default, not
 a considered one.
+
+## Direction reset — prior upgrade board rejected (2026-08-21)
+
+Eytan rejected the disposable A/B/C upgrade directions (`The Chalkline`, `One Shot Live`,
+and `Set the Bank`) as insufficiently transformative. They are canceled proposals, not an
+approved roadmap, and must not be implemented, combined, or revived without Eytan's written
+instruction.
+
+The replacement direction work is a clean-room **New Proposition**. Existing GRID mechanics,
+field geometry, circles, walls, HUD, interaction model, and visual language are context and
+anti-reference only; none is a continuity requirement. No production code changed as part of
+the rejected direction board.
+
+## Polish pass on the shipped build (2026-08-23) — 67/67 tests passing
+
+Implemented the 19 approved fixes from the Field Report, plus Eytan's two approved additions
+(smaller ball + falling-star trail, turn-start prompt popup). This is **polish on the already-
+shipped GRID build** — it does not touch, revive, or draw on any of the three canceled upgrade
+directions from the 2026-08-21 reset immediately above; nothing here is a New Proposition
+concept. It also deliberately leaves the wall-placement *mechanic* itself untouched (no "walls
+start absent," no popup-gated placement, no skip-to-next-turn) — that's Decision 3, explicitly
+out of scope pending a separate Designer ruling, per the brief's own hard exclusion.
+
+- **Radius 0.4 -> 0.3 broke one test, by design, and I fixed the fixture rather than the
+  assertion.** `test.js`'s circle-circle contact check hardcoded a 1.0-cell starting gap that
+  was really "2*radius + 0.2" in disguise — at the new radius that 0.2-cell cushion (the actual
+  thing being tested: does contact register when the moving circle's single-step travel just
+  barely closes a tight gap) no longer existed, so the two circles would never actually touch.
+  Rewrote the fixture's geometry as `2 * r + 0.2` (using the same `r = CONFIG.piece.radius`
+  every other radius-sensitive test in the file already computes dynamically) instead of a bare
+  literal, so it reproduces the identical margin (~0.014 cells, previously verified numerically)
+  regardless of what radius ships next time — this was the one test actually broken by the
+  change; grepped the rest of the file plus physics.js/rules.js/config.js for other numeric
+  callouts derived from the old radius (found three: a wall-clearance comment's "(0.8)", a
+  resolveRails corner-case comment's "~0.4 or ~9.6," both now corrected to match 0.3) and found
+  nothing else load-bearing.
+- **Falling-star trail matches the spec exactly** — length 20, quadratic alpha fade
+  (`maxAlpha * t^alphaExponent`), linear radius taper (`minRadiusScale` tail -> 1.0 head), radius
+  computed per-sample inside the loop (not hoisted), shooter's own colour via the existing
+  `wallOwnerColor` lookup, no glow on the trail itself. `config.js` and `render.js`'s
+  `drawTrail` doc comment both now say explicitly that this deviates from BUILD_SPEC.md §10's
+  "keep the last 12 positions" on Eytan's direct instruction, so a future reader doesn't mistake
+  it for unreviewed drift the way an unexplained config change might otherwise read.
+- **The completed-pass flash bug (item 5) was real and exactly as described**: `render.js`'s
+  `drawPassLine` gated its entire body — flash included — on `selectedIndex === null`, but
+  `input.js`'s `clearDrag()` nulls `selectedIndex` on release, which is the exact instant the
+  flash's own window opens. Fixed by snapshotting `launchedIndex` and the shooting player
+  *before* calling `rulesTick()` each physics step (new `launchedIndexThisStep`/`prevCurrentPlayer`
+  reads at the top of `main.js`'s accumulator loop, same place `wasPassedThisFlick` was already
+  captured), and only building the `passFlash` object from those snapshots on the rising edge —
+  never from a live re-read of `match.launchedIndex`/`match.currentPlayer` afterward, which the
+  brief correctly flagged as unsafe (`resolveFlick` can null/flip both within the very same
+  `tick()` call that raises the edge, if a weak flick both completes a pass and immediately
+  rest-snaps to zero in the same physics step). Traced the full call path (drag -> release ->
+  flight -> pass detection -> flash trigger -> draw) by reading, not by calling the draw
+  functions directly with synthetic args — that exact shortcut is documented in step 8's own
+  entry above as why this bug shipped invisibly the first time. Confidence: high on the logic;
+  genuinely unverified live (same rAF/headless-DOM limitation as every prior step — no browser
+  tooling was used for this build, per the brief's own instruction that Eytan handles that pass).
+- **Item 8's distinct "wasted pass" cue and item 19's timeout-forfeit cue both reuse
+  `drawIllegalPulse` with a colour parameter** rather than three unrelated effects — cheapest
+  correct option once the function already took an alpha; case 3 (pass completed, resolves as
+  an unarmed goal) is detected in `main.js` purely from state `rules.js` already exposes
+  (`match.goalThisFlick` stays true after `resolveFlick` if a goal-crossing happened at all this
+  flick, and case 2's armed+goal branch is the only OTHER way `goalThisFlick` ends up true with
+  the turn still active — that branch always returns a `goal` result, which is checked first) —
+  no new rules.js plumbing, no change to its resolution logic, exactly as scoped.
+- **Item 12's "use that freed phone space" is inherently loosely specified** (it names three
+  things — rail, badge, numeral — without saying whether they all move to one new DOM region or
+  each stay where they conceptually belong), and I made a concrete call rather than guess at a
+  new layout region: turn rail, half-field wash, ARMED badge, and the goal chevron all stay
+  canvas-drawn in the existing margin band (reusing the same technique `drawArmedBadge`/
+  `drawTurnTimer` already used, just bigger/better-spaced), while the turn-seconds numeral
+  (item 4) stays DOM, in the HUD's centre slot as item 4 explicitly names. `marginCells` bumped
+  1.0 -> 1.5 (computed from the new stack's pixel budget, not eyeballed) to fit the rail +
+  drain-bar + bigger badge without collision. Same status as every prior "first-guess, retune on
+  a real device" value in this file — flagging clearly rather than presenting it as verified.
+- **Item 14 (wall button reach) took the "raise CONFIG.hud.height" branch of the brief's own
+  either/or, not relocation.** Moving the button down to the existing bottom band risked a real
+  collision with the new turn-prompt (Part 3) and `#wall-controls`, which are already fighting
+  for the same screen real estate on a small phone — resolving that cleanly is an interaction-
+  design call I didn't think was mine to invent unilaterally under a HUD-styling item. Raised
+  `hud.height` 40 -> 56 (synced in styles.css, both places checked) and gave the button real
+  visual weight (bold, larger, higher opacity) instead.
+- **Item 17 took the "drop the letters, use colour+side" branch** of its own either/or, rather
+  than adding a persistent HUD label — HUD space was already the tightest constraint in this
+  whole pass (items 4/12/14 all compete for the same top bar), so I didn't want to add a fourth
+  thing there. Win screen now reads "CYAN WINS —"/"AMBER WINS —" instead of "Player A/B wins."
+- **Item 11 took the simpler "button restyling only" path the brief explicitly allowed** rather
+  than binding Rotate to a tap-on-the-preview gesture — `input.js`'s `onWallPointerDown` already
+  re-snaps the preview to wherever a pointer goes down, so tap-to-rotate would need real
+  tap-vs-drag disambiguation to not break the existing drag-to-reposition interaction, which is
+  more surface area than a HUD-styling item justified touching.
+- **Verification**: `node test.js` is fully green (67/67) after every meaningful batch of
+  changes, not just at the end — Part 2's radius change first, then items 5-8, then the
+  render.js canvas items, then the DOM/CSS/main.js layer, then this entry. Nothing in
+  `js/vec.js`, `js/physics.js`, or `js/rules.js` gained a DOM or Canvas import (checked directly
+  — grepped all three for `document.`/`window.`/`HTMLElement`/`CanvasRenderingContext`/
+  `getContext`, zero hits) or a `@ts-ignore`/`@ts-nocheck`. What's genuinely NOT verified: any of
+  this live in a browser — no headless DOM/canvas approach exists in this repo without adding a
+  dependency (not authorized), and the brief itself says Eytan does that pass after this report.
+  The one thing I'd most want eyes on first: the margin/HUD stacking math (marginCells 1.5,
+  hud.height 56) against a real phone screen, same category of risk as every prior "first-guess
+  pixel value" in this file's history.
+
+## Post-review follow-up fixes (2026-08-24)
+
+- Two non-blocking cleanup items flagged independently by reviewer and sentinel, both applied:
+  goal-popup content now goes through pre-declared `<span>`s' `.textContent`/`.style.color`
+  (`js/main.js` `onGoal()`, `index.html`'s `#goal-popup`) instead of `innerHTML` — the only
+  `innerHTML` use in the codebase; and the trail's colour is now snapshotted once when the trail
+  begins (`js/main.js`'s new `trailColor`) instead of `js/render.js`'s `drawFrame` reading
+  `match.currentPlayer` live at draw time, matching how `passFlash`/`goalFlash`/
+  `illegalPulseColor` already snapshot. `node test.js` still 67/67.

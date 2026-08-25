@@ -9,15 +9,22 @@
 <body>
   <canvas id="game"></canvas>
   <div id="hud">
-    <span class="hud-group"><span id="score-b">0</span><button id="wall-button-b" class="wall-button" type="button">Wall</button></span>
-    <span id="match-clock">5:00</span>
-    <span class="hud-group"><button id="wall-button-a" class="wall-button" type="button">Wall</button><span id="score-a">0</span></span>
+    <span class="hud-group"><span id="score-b">0</span><button id="wall-button-b" class="wall-button" type="button">Move Wall</button></span>
+    <span id="hud-center">
+      <span id="turn-clock">20</span>
+      <span id="match-clock">5:00</span>
+    </span>
+    <span class="hud-group"><button id="wall-button-a" class="wall-button" type="button">Move Wall</button><span id="score-a">0</span></span>
   </div>
-  <div id="goal-popup"></div>
+  <div id="goal-popup">GOAL — <span id="goal-score-a"></span>–<span id="goal-score-b"></span></div>
   <div id="win-overlay">
     <p id="win-message"></p>
-    <button id="play-again" type="button">Play again</button>
+    <div class="win-actions">
+      <button id="play-again" type="button">Play again</button>
+      <button id="change-field" type="button">Change field</button>
+    </div>
   </div>
+  <div id="turn-prompt">Place your wall — or just take your shot</div>
   <div id="wall-controls">
     <button id="wall-cancel" type="button">Cancel</button>
     <button id="wall-remove" type="button">Remove</button>
@@ -27,8 +34,14 @@
   <div id="mode-picker">
     <p>Choose a field</p>
     <div class="mode-picker-options">
-      <button id="mode-arena" type="button">ARENA</button>
-      <button id="mode-void" type="button">VOID</button>
+      <div class="mode-option">
+        <button id="mode-arena" type="button">ARENA</button>
+        <p class="mode-desc">Solid edges — the ball bounces off everything except the goals.</p>
+      </div>
+      <div class="mode-option">
+        <button id="mode-void" type="button">VOID</button>
+        <p class="mode-desc">No edges — drift off the field and your opponent scores.</p>
+      </div>
     </div>
   </div>
   <script type="module" src="js/main.js"></script>

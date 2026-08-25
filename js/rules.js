@@ -79,10 +79,13 @@ export function initialWalls() {
  * @property {number} flicksThisTurn  §14: counts every flick resolved since
  *   the current turn began (own goals and completed passes increment this
  *   without ending the turn); logged to the console and reset to 0 at every
- *   point the turn actually ends. Purely an instrumentation counter — no
- *   rule reads it. §14 flags whether continue-on-success makes turns too
- *   long as an open question for Eytan's playtesting, not something to
- *   guess at here; this only supplies the raw data.
+ *   point the turn actually ends. Started as a pure instrumentation
+ *   counter — no RULE reads it, §14 flags whether continue-on-success
+ *   makes turns too long as an open question for Eytan's playtesting, not
+ *   something to guess at here. As of the 2026-08-23 polish pass (Part 3)
+ *   main.js's turn-start prompt also reads it (a display read, gating when
+ *   the prompt can reappear mid-turn — not a rules dependency; nothing in
+ *   this file's own logic changed).
  * @property {Player | null} lastScorer  captured once at the moment a GOAL
  *   is confirmed — deliberately NOT read live off currentPlayer afterward,
  *   since currentPlayer flips to the conceding player as part of the same
@@ -236,7 +239,8 @@ export function resetMatch(match, world) {
  * wall, so a player moving their own wall doesn't get rejected for being
  * too close to where it already was. Reuses the same `clearance` value
  * rather than adding a second tunable — must stay above 2*piece.radius
- * (0.8) for physics.js's sequential per-circle wall resolution to never
+ * (0.6, was 0.8 pre-radius-change) for physics.js's sequential per-circle
+ * wall resolution to never
  * volley a circle between two walls that are too close together; 2.0
  * clears that with comfortable margin.
  * @param {import('./physics.js').Wall} wall @param {import('./physics.js').World} world
