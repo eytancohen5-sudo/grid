@@ -1,5 +1,6 @@
 ---
 name: reviewer
+model: sonnet
 description: Code quality reviewer for Akh Sheli. Reviews diffs for idiomatic code, naming, complexity, and maintainability — separate from sentinel's security pass. Read-only. Use after forge completes and before sentinel's gate.
 tools: Read, Grep, Glob, Bash
 ---

@@ -1,5 +1,6 @@
 ---
 name: challenger
+model: opus
 description: Adversarial plan reviewer. Reviews champ's routing plan before any code is written — surfaces edge cases, scope creep, missing error paths, and hidden assumptions. Read-only. Use after champ emits a plan and before forge begins.
 tools: Read, Grep, Glob, WebFetch, WebSearch
 ---
