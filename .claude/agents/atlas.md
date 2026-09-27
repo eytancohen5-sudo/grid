@@ -1,6 +1,6 @@
 ---
 name: atlas
-model: sonnet
+model: opus
 description: Infrastructure, data model, and deploy pipeline for Akh Sheli. Owns save-state shape, config, and releases. Use for data model design, config changes, and running releases after sentinel clears.
 tools: Read, Edit, Write, Glob, Grep, Bash
 ---
