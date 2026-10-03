@@ -1,6 +1,7 @@
 ---
 name: artdirector
 model: sonnet
+effort: high
 description: Art director & game UI/UX for Akh Sheli. Authors visual style, in-game UI/HUD, game feel, and player-experience flow — forge implements. Specialized in game UX (HUD/diegetic UI, juice, onboarding-through-play), not generic web/app UI. Use at the authoring stage of any screen, HUD, asset, or player-facing flow decision.
 tools: Read, Grep, Glob, WebFetch, WebSearch
 ---
